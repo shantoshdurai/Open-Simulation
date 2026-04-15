@@ -2,6 +2,7 @@ import { useMemo, useRef, useEffect } from 'react'
 import * as THREE from 'three'
 import {
   createPlanet,
+  updatePlanetSeasonColors,
   scatterDecorations,
   generateVillages,
   generateRoads,
@@ -16,6 +17,8 @@ import {
 // Cart:   ~1.8      |  Barrel: 1.2
 
 export default function Planet({ config, season, onReady, children }) {
+  // Planet geometry is built once per world config — NOT per season.
+  // Season only changes vertex colors, handled separately below.
   const planet = useMemo(() => createPlanet({
     radius: 200,
     detail: 7,
@@ -23,7 +26,12 @@ export default function Planet({ config, season, onReady, children }) {
     amplitude: 18 + config.worldSize * 12,
     waterLevel: config.waterLevel,
     season
-  }), [config.worldSize, config.waterLevel, season])
+  }), [config.worldSize, config.waterLevel])
+
+  // Live season color update — no geometry rebuild, no player respawn.
+  useEffect(() => {
+    updatePlanetSeasonColors(planet, season)
+  }, [planet, season])
 
   const decor    = useMemo(() => scatterDecorations(planet), [planet])
   const villages = useMemo(() => generateVillages(planet, 7), [planet])

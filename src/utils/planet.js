@@ -48,6 +48,27 @@ function biomeColor(biome, seasonT) {
   return lerpColor(palette[seasons[idx]], palette[seasons[next]], t)
 }
 
+// Update vertex colors in an existing planet geometry for a new season value.
+// This avoids rebuilding the entire planet (and re-spawning the player) on
+// every season slider change.
+export function updatePlanetSeasonColors(planet, season) {
+  const geo = planet.geometry
+  const colorAttr = geo.attributes.color
+  if (!colorAttr) return
+  const pos = geo.attributes.position
+  const tmpC = new THREE.Color()
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
+    const len = Math.sqrt(x*x + y*y + z*z)
+    const nx = x / len, ny = y / len, nz = z / len
+    const biome = planet.sampleBiome(nx, ny, nz)
+    const baseColor = biomeColor(biome, season)
+    tmpC.copy(baseColor).offsetHSL(0, 0, (Math.random() - 0.5) * 0.04)
+    colorAttr.setXYZ(i, tmpC.r, tmpC.g, tmpC.b)
+  }
+  colorAttr.needsUpdate = true
+}
+
 export function createPlanet({
   radius = 200,
   detail = 8,
