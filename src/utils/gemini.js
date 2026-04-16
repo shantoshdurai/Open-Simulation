@@ -2,7 +2,9 @@
 // Stores key in localStorage. Free tier: 1500 req/day on gemini-2.0-flash.
 
 const STORAGE_KEY = 'opensim_gemini_key'
-const MODEL = 'gemini-2.0-flash'
+// gemini-2.0-flash-lite: fastest, cheapest, ~10x lower quota consumption than flash
+// Perfect for short NPC dialogue (max 80 tokens)
+const MODEL = 'gemini-2.0-flash-lite'
 
 export function getApiKey() {
   return localStorage.getItem(STORAGE_KEY) || ''
@@ -36,9 +38,9 @@ export async function chatWithGemini({ systemPrompt, history, userMessage }) {
     systemInstruction: { parts: [{ text: systemPrompt }] },
     contents,
     generationConfig: {
-      temperature: 0.9,
-      maxOutputTokens: 120,
-      topP: 0.95
+      temperature: 0.85,
+      maxOutputTokens: 80,
+      topP: 0.92
     }
   }
 
@@ -50,7 +52,11 @@ export async function chatWithGemini({ systemPrompt, history, userMessage }) {
 
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`Gemini error ${res.status}: ${text.slice(0, 200)}`)
+    // For quota errors give a clear message
+    if (res.status === 429) {
+      throw new Error('Daily quota reached — get a new free key at aistudio.google.com/apikey')
+    }
+    throw new Error(`Gemini error ${res.status}: ${text.slice(0, 160)}`)
   }
 
   const data = await res.json()

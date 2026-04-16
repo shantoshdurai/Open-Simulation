@@ -1,4 +1,4 @@
-// Tiny shared registry so Player can find nearby NPCs without React re-renders.
+// Shared NPC registry — imperative spatial queries without React re-renders.
 export function createNPCRegistry() {
   const entries = new Map()
   return {
@@ -14,6 +14,16 @@ export function createNPCRegistry() {
         if (d < nearestDist) { nearest = e; nearestDist = d }
       })
       return nearest ? { ...nearest, distance: nearestDist } : null
+    },
+    // Find all NPCs within maxDist (for group socializing)
+    findNearby(pos, maxDist = 10, excludeId = null) {
+      const results = []
+      entries.forEach((e, id) => {
+        if (id === excludeId) return
+        const d = e.getPosition().distanceTo(pos)
+        if (d < maxDist) results.push({ ...e, distance: d })
+      })
+      return results.sort((a, b) => a.distance - b.distance)
     },
     all: entries
   }

@@ -158,7 +158,7 @@ export function createPlanet({
 
   // Shared ground sampler — THE source of truth for ground height.
   // Used by decorations at placement time AND by player/NPCs per-frame snap.
-  const groundSampler = buildGroundSampler(sampleHeight, seaLevel, radius)
+  const groundSampler = buildGroundSampler(geo, seaLevel, radius)
   // Rebind surfaceRadius to use the same sampler as decorations — no more gap.
   surfaceRadius = groundSampler.getGroundRadius
 
@@ -185,11 +185,12 @@ export function scatterDecorations(planet, seed = 42) {
   let s = seed
   const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
 
-  const TARGET = 900
+  // Much denser world — 3000 decorations instead of 900
+  const TARGET = 3000
   let attempts = 0
   let placed = 0
 
-  while (placed < TARGET && attempts < TARGET * 5) {
+  while (placed < TARGET && attempts < TARGET * 4) {
     attempts++
     const u = rand() * 2 - 1
     const theta = rand() * Math.PI * 2
@@ -200,37 +201,36 @@ export function scatterDecorations(planet, seed = 42) {
     const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
     if (biome === planet.BIOMES.OCEAN || biome === planet.BIOMES.SNOW) continue
 
-    // Exact mesh surface point via raycast
     const groundPoint = planet.groundSampler.getGroundPoint(dir)
     const item = {
-      position: groundPoint,  // base sits exactly on mesh
+      position: groundPoint,
       normal: dir.clone(),
-      scale: 0.85 + rand() * 0.65,
+      scale: 0.75 + rand() * 0.7,
       rotY: rand() * Math.PI * 2
     }
 
     let key = null
     switch (biome) {
       case planet.BIOMES.FOREST:
-        key = rand() < 0.55 ? 'pines' : rand() < 0.4 ? 'trees' : rand() < 0.5 ? 'bushes' : 'mushrooms'
+        key = rand() < 0.5 ? 'pines' : rand() < 0.5 ? 'trees' : rand() < 0.5 ? 'bushes' : 'mushrooms'
         break
       case planet.BIOMES.JUNGLE:
-        key = rand() < 0.5 ? 'trees' : rand() < 0.4 ? 'palms' : 'bushes'
+        key = rand() < 0.45 ? 'trees' : rand() < 0.45 ? 'palms' : rand() < 0.5 ? 'bushes' : 'flowers'
         break
       case planet.BIOMES.MEADOW:
-        key = rand() < 0.55 ? 'flowers' : rand() < 0.5 ? 'bushes' : 'trees'
+        key = rand() < 0.5 ? 'flowers' : rand() < 0.4 ? 'bushes' : rand() < 0.5 ? 'trees' : 'rocks'
         break
       case planet.BIOMES.DESERT:
-        key = rand() < 0.6 ? 'cacti' : 'rocks'
+        key = rand() < 0.65 ? 'cacti' : 'rocks'
         break
       case planet.BIOMES.TUNDRA:
-        key = rand() < 0.5 ? 'rocks' : 'pines'
+        key = rand() < 0.55 ? 'rocks' : rand() < 0.6 ? 'pines' : 'bushes'
         break
       case planet.BIOMES.MOUNTAIN:
-        key = rand() < 0.7 ? 'rocks' : 'pines'
+        key = rand() < 0.65 ? 'rocks' : rand() < 0.7 ? 'pines' : 'trees'
         break
       case planet.BIOMES.BEACH:
-        key = rand() < 0.4 ? 'palms' : rand() < 0.5 ? 'rocks' : null
+        key = rand() < 0.45 ? 'palms' : rand() < 0.5 ? 'rocks' : rand() < 0.4 ? 'flowers' : null
         break
     }
     if (key) { groups[key].push(item); placed++ }
@@ -308,7 +308,7 @@ export function generateVillages(planet, count = 4, seed = 99) {
   const villages = []
   let tries = 0
 
-  while (villages.length < count && tries < 200) {
+  while (villages.length < count && tries < 400) {
     tries++
     const u = rand() * 2 - 1
     const theta = rand() * Math.PI * 2
@@ -319,13 +319,21 @@ export function generateVillages(planet, count = 4, seed = 99) {
     if (biome === planet.BIOMES.MOUNTAIN || biome === planet.BIOMES.SNOW || biome === planet.BIOMES.OCEAN) continue
     if (Math.abs(centerDir.y) > 0.7) continue
 
+    // Minimum distance between village centers (40 world-units on the surface)
+    const tooClose = villages.some(v => {
+      const groundA = planet.groundSampler.getGroundPoint(centerDir)
+      const groundB = planet.groundSampler.getGroundPoint(v.center)
+      return groundA.distanceTo(groundB) < 40
+    })
+    if (tooClose) continue
+
     const up = centerDir.clone()
     const ref = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
     const right = new THREE.Vector3().crossVectors(ref, up).normalize()
     const fwd = new THREE.Vector3().crossVectors(up, right).normalize()
 
     const houses = []
-    const houseCount = 6 + Math.floor(rand() * 6)
+    const houseCount = 8 + Math.floor(rand() * 5)
     const spacing = 9   // world units — house footprint is ~5 wide so 9 gives clearance
     const placements = []
 
@@ -403,35 +411,74 @@ export function scatterGrass(planet, villages, seed = 77) {
   return blades
 }
 
-// Scatter static carts and barrels inside villages (lived-in feel)
-export function scatterVillageProps(villages, seed = 88) {
+// Scatter static props inside villages — carts, barrels, benches, wells, fountains, fences
+export function scatterVillageProps(villages, planet, seed = 88) {
   const props = []
   let s = seed
   const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
 
   villages.forEach(village => {
-    // 3-6 props per village, placed near random houses
-    const count = 3 + Math.floor(rand() * 4)
-    for (let i = 0; i < count; i++) {
-      if (village.houses.length === 0) continue
-      const house = village.houses[Math.floor(rand() * village.houses.length)]
-      // Place next to the house along its local tangent
-      const up = house.normal.clone()
-      const ref = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
-      const right = new THREE.Vector3().crossVectors(ref, up).normalize()
-      const fwd = new THREE.Vector3().crossVectors(up, right).normalize()
-      const angle = rand() * Math.PI * 2
-      const offset = right.clone().multiplyScalar(Math.cos(angle) * 4)
-        .addScaledVector(fwd, Math.sin(angle) * 4)
-      const pos = house.position.clone().add(offset)
+    const up    = village.center.clone().normalize()
+    const ref   = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+    const right = new THREE.Vector3().crossVectors(ref, up).normalize()
+    const fwd   = new THREE.Vector3().crossVectors(up, right).normalize()
 
-      props.push({
-        position: pos,
-        normal: up,
-        rotY: rand() * Math.PI * 2,
-        scale: 0.9 + rand() * 0.3,
-        type: rand() < 0.5 ? 'barrel' : 'cart'
-      })
+    // ── Village center: well + fountain + benches in a small park ──
+    const centerPos = planet.groundSampler.getGroundPoint(village.center.clone().normalize())
+
+    // Central well
+    props.push({ position: centerPos.clone(), normal: up.clone(), rotY: rand() * Math.PI * 2, scale: 1.0, type: 'well' })
+
+    // 4 benches arranged in a cross around the well at ~5 units
+    for (let b = 0; b < 4; b++) {
+      const angle = (b / 4) * Math.PI * 2
+      const benchOffset = right.clone().multiplyScalar(Math.cos(angle) * 5)
+        .addScaledVector(fwd, Math.sin(angle) * 5)
+      const benchDir = up.clone().multiplyScalar(200).add(benchOffset).normalize()
+      const benchPos = planet.groundSampler.getGroundPoint(benchDir)
+      props.push({ position: benchPos, normal: up.clone(), rotY: angle, scale: 1.0, type: 'bench' })
+    }
+
+    // Fence ring around the park area (12 posts at ~8 unit radius)
+    for (let f = 0; f < 12; f++) {
+      const angle = (f / 12) * Math.PI * 2
+      const fenceOffset = right.clone().multiplyScalar(Math.cos(angle) * 8)
+        .addScaledVector(fwd, Math.sin(angle) * 8)
+      const fenceDir = up.clone().multiplyScalar(200).add(fenceOffset).normalize()
+      const fencePos = planet.groundSampler.getGroundPoint(fenceDir)
+      props.push({ position: fencePos, normal: up.clone(), rotY: angle, scale: 1.0, type: 'fence' })
+    }
+
+    // ── Near houses: carts, barrels, flowers boxes ──
+    const nearCount = 6 + Math.floor(rand() * 5)
+    for (let i = 0; i < nearCount; i++) {
+      if (village.houses.length === 0) continue
+      const house     = village.houses[Math.floor(rand() * village.houses.length)]
+      const houseUp   = house.normal.clone()
+      const hRef      = Math.abs(houseUp.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+      const hRight    = new THREE.Vector3().crossVectors(hRef, houseUp).normalize()
+      const hFwd      = new THREE.Vector3().crossVectors(houseUp, hRight).normalize()
+      const angle     = rand() * Math.PI * 2
+      const dist      = 3 + rand() * 4
+      const offset    = hRight.clone().multiplyScalar(Math.cos(angle) * dist)
+        .addScaledVector(hFwd, Math.sin(angle) * dist)
+      const pos = house.position.clone().add(offset)
+      const r   = rand()
+      const type = r < 0.35 ? 'barrel' : r < 0.6 ? 'cart' : r < 0.8 ? 'crate' : 'flowerbox'
+      props.push({ position: pos, normal: houseUp.clone(), rotY: rand() * Math.PI * 2, scale: 0.85 + rand() * 0.3, type })
+    }
+
+    // ── Scattered lanterns along village paths ──
+    const lanternCount = 4 + Math.floor(rand() * 4)
+    for (let i = 0; i < lanternCount; i++) {
+      const angle  = rand() * Math.PI * 2
+      const dist   = 10 + rand() * 18
+      const offset = right.clone().multiplyScalar(Math.cos(angle) * dist)
+        .addScaledVector(fwd, Math.sin(angle) * dist)
+      const dir    = up.clone().multiplyScalar(200).add(offset).normalize()
+      if (!planet.isLand(dir.x, dir.y, dir.z)) continue
+      const pos = planet.groundSampler.getGroundPoint(dir)
+      props.push({ position: pos, normal: up.clone(), rotY: rand() * Math.PI * 2, scale: 0.9 + rand() * 0.2, type: 'lantern' })
     }
   })
   return props

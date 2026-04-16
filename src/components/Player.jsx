@@ -33,12 +33,14 @@ export default function Player({
   const state = useRef({
     position: new THREE.Vector3(0, planet.radius + 30, 0),
     velocity: new THREE.Vector3(),
-    yaw: 0,
     pitch: 0,
+    yawDelta: 0,
     keys: { w: false, a: false, s: false, d: false, shift: false, space: false },
     grounded: false,
     locked: false,
-    walkPhase: 0
+    walkPhase: 0,
+    facing: new THREE.Vector3(),
+    lookDir: new THREE.Vector3(0, 0, 1)
   }).current
 
   // Spawn on a known land spot using the raycast sampler for exact placement
@@ -51,6 +53,10 @@ export default function Player({
     // Use raycast sampler for exact ground position, then drop in from slightly above
     const groundPt = planet.groundSampler.getGroundPoint(dir)
     state.position.copy(groundPt).addScaledVector(dir, 0.3)
+    const ref = Math.abs(dir.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+    const right = new THREE.Vector3().crossVectors(ref, dir).normalize()
+    state.lookDir.crossVectors(dir, right).normalize()
+    state.facing.copy(state.lookDir)
   }, [planet])
 
   // Pointer lock + key handlers
@@ -60,8 +66,8 @@ export default function Player({
     const onLockChange = () => { state.locked = document.pointerLockElement === canvas }
     const onMouseMove = (e) => {
       if (!state.locked) return
-      state.yaw -= e.movementX * 0.0025
-      state.pitch -= e.movementY * 0.0025
+      state.yawDelta -= e.movementX * 0.0025
+      state.pitch += e.movementY * 0.0025
       state.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, state.pitch))
     }
     const onKeyDown = (e) => {
@@ -112,26 +118,30 @@ export default function Player({
   useFrame((_, delta) => {
     if (isPaused) {
       // Still update camera to follow player
-      if (meshRef.current) meshRef.current.setWalk(state.walkPhase, 0)
+      if (meshRef.current) meshRef.current.setAnimation(state.walkPhase, 0, 'idle')
       return
     }
     const dt = Math.min(delta, 0.05)
 
     scratch.up.copy(state.position).normalize()
 
-    const ref = Math.abs(scratch.up.y) < 0.95 ? scratch.worldUp : new THREE.Vector3(1, 0, 0)
-    scratch.right.crossVectors(ref, scratch.up).normalize()
-    scratch.forward.crossVectors(scratch.up, scratch.right).normalize()
+    // Parallel transport look direction (first-order projection)
+    state.lookDir.addScaledVector(scratch.up, -state.lookDir.dot(scratch.up)).normalize()
 
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(scratch.up, state.yaw)
-    const f = scratch.forward.clone().applyQuaternion(yawQ)
-    const r = scratch.right.clone().applyQuaternion(yawQ)
+    // Apply mouse yaw
+    if (state.yawDelta !== 0) {
+      state.lookDir.applyAxisAngle(scratch.up, state.yawDelta)
+      state.yawDelta = 0
+    }
+
+    const f = state.lookDir.clone()
+    const r = scratch.up.clone().cross(f).normalize()
 
     scratch.move.set(0, 0, 0)
     if (state.keys.w) scratch.move.add(f)
     if (state.keys.s) scratch.move.sub(f)
-    if (state.keys.d) scratch.move.add(r)
-    if (state.keys.a) scratch.move.sub(r)
+    if (state.keys.d) scratch.move.sub(r)
+    if (state.keys.a) scratch.move.add(r)
     const moving = scratch.move.lengthSq() > 0
     if (moving) {
       scratch.move.normalize().multiplyScalar(state.keys.shift ? RUN_SPEED : WALK_SPEED)
@@ -169,20 +179,24 @@ export default function Player({
     if (moving && state.grounded) {
       state.walkPhase += dt * (state.keys.shift ? 14 : 9)
     }
-    if (meshRef.current) meshRef.current.setWalk(state.walkPhase, moving ? (state.keys.shift ? 4 : 2.5) : 0)
+    if (meshRef.current) meshRef.current.setAnimation(state.walkPhase, moving ? (state.keys.shift ? 4 : 2.5) : 0, moving ? 'walk' : 'idle')
 
-    // Apply transforms — character's local +Z = forward (where eyes look).
-    // After upQ (which aligns local +Y to world up), rotating by yaw around
-    // local Y points the body in the direction the camera is facing.
+    // Smooth character model rotation
+    if (state.facing.lengthSq() < 0.1) state.facing.copy(f)
+    if (moving) {
+      state.facing.lerp(scratch.move.clone().normalize(), 0.15).normalize()
+    }
+    state.facing.addScaledVector(scratch.up, -state.facing.dot(scratch.up)).normalize()
+
+    // Apply transforms — stable tangent basis
     if (groupRef.current) {
       groupRef.current.position.copy(state.position)
-      // Align local +Y to surface normal, then yaw around that normal.
-      // upQ: aligns world-up (0,1,0) → surface normal
-      // yawQ: rotates around the surface normal by yaw
-      // apply upQ first, then yawQ → correct surface-frame yaw
-      const upQ  = new THREE.Quaternion().setFromUnitVectors(scratch.worldUp, scratch.up)
-      const yawQ = new THREE.Quaternion().setFromAxisAngle(scratch.up, state.yaw)
-      groupRef.current.quaternion.copy(yawQ).multiply(upQ)
+      const Y = scratch.up.clone()
+      const Z = state.facing.clone()
+      const X = Y.clone().cross(Z).normalize()
+      Z.copy(X).cross(Y).normalize()
+      const mat = new THREE.Matrix4().makeBasis(X, Y, Z)
+      groupRef.current.quaternion.setFromRotationMatrix(mat)
     }
 
     // Camera

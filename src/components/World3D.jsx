@@ -13,14 +13,13 @@ const SEASON_NAMES = ['Spring', 'Summer', 'Autumn', 'Winter']
 
 export default function World3D({ config }) {
   const [cameraMode, setCameraMode] = useState('third')
-  const [season, setSeason] = useState(1) // 0..3
+  const [season, setSeason] = useState(1)
   const [timeOfDay, setTimeOfDay] = useState(0.4)
   const [autoTime, setAutoTime] = useState(true)
   const [activeNPC, setActiveNPC] = useState(null)
   const [ready, setReady] = useState(false)
 
   const registry = useMemo(() => createNPCRegistry(), [])
-  // Ref shared with NPCs so they read the latest time without re-rendering
   const timeRef = useRef(0.4)
   timeRef.current = timeOfDay
 
@@ -29,7 +28,6 @@ export default function World3D({ config }) {
     return Array.from({ length: count }, (_, i) => generateNPC(i + 1))
   }, [config.population])
 
-  // Player appearance — first NPC's appearance, but distinct shirt
   const playerAppearance = useMemo(() => {
     const a = generateNPC(9999).appearance
     a.shirtColor = '#3a5a8a'
@@ -55,7 +53,6 @@ export default function World3D({ config }) {
     const nearest = registry.findNearest(playerPos, 5)
     if (nearest) {
       setActiveNPC(nearest.npc)
-      // Release pointer lock so chat is usable
       if (document.pointerLockElement) document.exitPointerLock()
     }
   }
@@ -75,6 +72,15 @@ export default function World3D({ config }) {
     timeOfDay: timeLabel
   }
 
+  // Distribute NPCs across villages
+  const assignNPCsToVillages = (villages) => {
+    if (!villages || villages.length === 0) return npcs.map(n => ({ npc: n, village: null }))
+    return npcs.map((n, i) => ({
+      npc: n,
+      village: villages[i % villages.length]
+    }))
+  }
+
   return (
     <>
       <Canvas
@@ -89,22 +95,38 @@ export default function World3D({ config }) {
         <hemisphereLight args={['#bfd6f2', '#3a2a1a', 0.35]} />
 
         <Planet config={config} season={season} onReady={() => setReady(true)}>
-          {(planet) => (
-            <>
-              <Player
-                planet={planet}
-                cameraMode={cameraMode}
-                onCameraModeChange={setCameraMode}
-                onInteract={handleInteract}
-                isPaused={!!activeNPC}
-                appearance={playerAppearance}
-              />
-              {npcs.map(n => (
-                <NPC key={n.id} planet={planet} npc={n} registry={registry} timeRef={timeRef} />
-              ))}
-              <Ambient planet={planet} />
-            </>
-          )}
+          {(planet, villages) => {
+            const assignments = assignNPCsToVillages(villages)
+            return (
+              <>
+                <Player
+                  planet={planet}
+                  cameraMode={cameraMode}
+                  onCameraModeChange={setCameraMode}
+                  onInteract={handleInteract}
+                  isPaused={!!activeNPC}
+                  appearance={playerAppearance}
+                />
+                {assignments.map(({ npc: n, village }) => (
+                  <NPC
+                    key={n.id}
+                    planet={planet}
+                    npc={n}
+                    registry={registry}
+                    timeRef={timeRef}
+                    village={village}
+                    season={SEASON_NAMES[Math.floor(season) % 4]}
+                  />
+                ))}
+                <Ambient planet={planet} />
+                <Fish planet={planet} />
+                <SnowParticles planet={planet} />
+                <OceanMist planet={planet} />
+                <Fireflies planet={planet} timeRef={timeRef} villages={villages} />
+                <DesertDust planet={planet} />
+              </>
+            )
+          }}
         </Planet>
       </Canvas>
 
@@ -116,12 +138,12 @@ export default function World3D({ config }) {
       )}
 
       <div className="world-hud">
-        <div className="hud-title">World Active</div>
-        <div className="stat"><span>Population</span><span>{Math.round(config.population)}</span></div>
+        <div className="hud-title">Open Simulation</div>
+        <div className="stat"><span>Inhabitants</span><span>{Math.round(config.population)}</span></div>
         <div className="stat"><span>Climate</span><span>{climateLabel}</span></div>
         <div className="stat"><span>Season</span><span>{SEASON_NAMES[Math.floor(season) % 4]}</span></div>
         <div className="stat"><span>Time</span><span>{timeLabel}</span></div>
-        <div className="stat"><span>Camera</span><span>{cameraMode === 'first' ? '1st Person' : '3rd Person'}</span></div>
+        <div className="stat"><span>Camera</span><span>{cameraMode === 'first' ? '1st' : '3rd'} Person</span></div>
       </div>
 
       <div className="world-controls">
@@ -171,15 +193,13 @@ export default function World3D({ config }) {
   )
 }
 
-// Ambient living-world: butterflies fluttering above the planet surface.
-// Cheap — uses an InstancedMesh with simple sin-based motion.
+// ── Butterflies ──
 function Ambient({ planet }) {
   const meshRef = useRef()
   const COUNT = 80
 
   const seeds = useMemo(() => {
     return Array.from({ length: COUNT }, (_, i) => {
-      // Spawn each butterfly at a random land point
       let dir = new THREE.Vector3(0, 1, 0)
       for (let j = 0; j < 30; j++) {
         const u = Math.random() * 2 - 1
@@ -204,9 +224,7 @@ function Ambient({ planet }) {
     const arr = new Float32Array(COUNT * 3)
     seeds.forEach((s, i) => {
       const c = new THREE.Color(s.color)
-      arr[i * 3] = c.r
-      arr[i * 3 + 1] = c.g
-      arr[i * 3 + 2] = c.b
+      arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b
     })
     return arr
   }, [seeds])
@@ -220,7 +238,6 @@ function Ambient({ planet }) {
     if (!meshRef.current) return
     const t = rs.clock.elapsedTime
     seeds.forEach((s, i) => {
-      // Local tangent frame at center
       const up = s.center
       const ref = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
       const right = new THREE.Vector3().crossVectors(ref, up).normalize()
@@ -244,14 +261,338 @@ function Ambient({ planet }) {
   })
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, COUNT]}>
+    <instancedMesh ref={meshRef} args={[undefined, undefined, COUNT]} frustumCulled={false}>
       <boxGeometry args={[0.25, 0.06, 0.25]} />
       <meshBasicMaterial vertexColors />
     </instancedMesh>
   )
 }
 
-// Directional light that follows the sun position
+// ── Fish ──
+function Fish({ planet }) {
+  const meshRef = useRef()
+  const COUNT = 160
+
+  const seeds = useMemo(() => {
+    return Array.from({ length: COUNT }, () => {
+      let dir = new THREE.Vector3(0, 1, 0)
+      for (let j = 0; j < 30; j++) {
+        const u = Math.random() * 2 - 1
+        const theta = Math.random() * Math.PI * 2
+        const r = Math.sqrt(1 - u * u)
+        dir = new THREE.Vector3(r * Math.cos(theta), u, r * Math.sin(theta))
+        if (!planet.isLand(dir.x, dir.y, dir.z)) break
+      }
+      return {
+        center: dir.clone(),
+        radius: 3 + Math.random() * 6,
+        speed: 0.15 + Math.random() * 0.2,
+        phase: Math.random() * Math.PI * 2,
+        depth: planet.waterRadius - (1 + Math.random() * 3),
+        color: ['#ff8fbf', '#44aaff', '#e0e0e0', '#ffaa5a'][Math.floor(Math.random() * 4)]
+      }
+    })
+  }, [planet])
+
+  const dummy = useMemo(() => new THREE.Object3D(), [])
+  const colors = useMemo(() => {
+    const arr = new Float32Array(COUNT * 3)
+    seeds.forEach((s, i) => {
+      const c = new THREE.Color(s.color)
+      arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b
+    })
+    return arr
+  }, [seeds])
+
+  const geo = useMemo(() => new THREE.ConeGeometry(0.3, 1.2, 4).rotateX(Math.PI / 2), [])
+
+  useEffect(() => {
+    if (!meshRef.current) return
+    meshRef.current.instanceColor = new THREE.InstancedBufferAttribute(colors, 3)
+  }, [colors])
+
+  useFrame((rs) => {
+    if (!meshRef.current) return
+    const t = rs.clock.elapsedTime
+    seeds.forEach((s, i) => {
+      const up = s.center
+      const ref = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+      const right = new THREE.Vector3().crossVectors(ref, up).normalize()
+      const fwd = new THREE.Vector3().crossVectors(up, right).normalize()
+      const angle = t * s.speed + s.phase
+      const offset = right.clone().multiplyScalar(Math.cos(angle) * s.radius)
+        .addScaledVector(fwd, Math.sin(angle) * s.radius)
+      const tangent = right.clone().multiplyScalar(-Math.sin(angle))
+        .addScaledVector(fwd, Math.cos(angle)).normalize()
+      const pos = up.clone().multiplyScalar(s.depth).add(offset)
+      const wiggle = Math.sin(t * 10 + s.phase) * 0.2
+      pos.addScaledVector(right, wiggle)
+
+      const mat = new THREE.Matrix4()
+      const Z = tangent.clone()
+      const Y = up.clone()
+      const X = Y.clone().cross(Z).normalize()
+      Z.copy(X).cross(Y).normalize()
+      mat.makeBasis(X, Y, Z)
+
+      dummy.position.copy(pos)
+      dummy.quaternion.setFromRotationMatrix(mat)
+      dummy.scale.setScalar(0.7)
+      dummy.updateMatrix()
+      meshRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    meshRef.current.instanceMatrix.needsUpdate = true
+  })
+
+  return (
+    <instancedMesh ref={meshRef} args={[geo, undefined, COUNT]} frustumCulled={false}>
+      <meshBasicMaterial vertexColors />
+    </instancedMesh>
+  )
+}
+
+// Helper: build tangent frame from a surface normal
+function tangentFrame(up) {
+  const ref   = Math.abs(up.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+  const right = new THREE.Vector3().crossVectors(ref, up).normalize()
+  const fwd   = new THREE.Vector3().crossVectors(up, right).normalize()
+  return { right, fwd }
+}
+
+// ── Snow Particles — float 1–20 units above surface, drift and fall ──
+function SnowParticles({ planet }) {
+  const meshRef = useRef()
+
+  // Gather all snowy/tundra surface points first, then spawn particles above them
+  const seeds = useMemo(() => {
+    const out = []
+    let attempts = 0
+    while (out.length < 250 && attempts < 2500) {
+      attempts++
+      const u     = Math.random() * 2 - 1
+      const theta = Math.random() * Math.PI * 2
+      const rr    = Math.sqrt(1 - u * u)
+      const dir   = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+      const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
+      if (biome !== 'snow' && biome !== 'tundra') continue
+      // Store the EXACT ground radius so we can add height on top
+      const surfR = planet.surfaceRadius(dir.x, dir.y, dir.z)
+      out.push({
+        dir:         dir.clone(),
+        surfR,
+        startHeight: 1 + Math.random() * 18,  // starts 1–18 units above ground
+        fallSpeed:   0.25 + Math.random() * 0.35,
+        driftSpeed:  0.04 + Math.random() * 0.08,
+        phase:       Math.random() * Math.PI * 2
+      })
+    }
+    return out
+  }, [planet])
+
+  const dummy = useMemo(() => new THREE.Object3D(), [])
+
+  useFrame((rs) => {
+    if (!meshRef.current || seeds.length === 0) return
+    const t = rs.clock.elapsedTime
+    seeds.forEach((s, i) => {
+      const { right, fwd } = tangentFrame(s.dir)
+      // Wrap height so flake resets above when it hits ground (startHeight cycles)
+      const h    = s.surfR + ((s.startHeight - t * s.fallSpeed) % 18 + 18) % 18 + 0.5
+      const dX   = Math.sin(t * s.driftSpeed * 1.4 + s.phase) * 2.5
+      const dZ   = Math.cos(t * s.driftSpeed * 0.9 + s.phase) * 2.5
+      dummy.position.copy(s.dir).multiplyScalar(h).addScaledVector(right, dX).addScaledVector(fwd, dZ)
+      dummy.scale.setScalar(0.18)
+      dummy.updateMatrix()
+      meshRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    meshRef.current.instanceMatrix.needsUpdate = true
+  })
+
+  if (seeds.length === 0) return null
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, seeds.length]} frustumCulled={false}>
+      <sphereGeometry args={[0.3, 4, 3]} />
+      <meshBasicMaterial color="#e8f4ff" transparent opacity={0.85} />
+    </instancedMesh>
+  )
+}
+
+// ── Ocean Mist — rises from just above water level ──
+function OceanMist({ planet }) {
+  const meshRef = useRef()
+
+  const seeds = useMemo(() => {
+    const out = []
+    let attempts = 0
+    while (out.length < 120 && attempts < 1400) {
+      attempts++
+      const u     = Math.random() * 2 - 1
+      const theta = Math.random() * Math.PI * 2
+      const rr    = Math.sqrt(1 - u * u)
+      const dir   = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+      const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
+      if (biome !== 'beach') continue
+      out.push({
+        dir:        dir.clone(),
+        waterR:     planet.waterRadius,
+        riseSpeed:  0.1 + Math.random() * 0.18,
+        driftSpeed: 0.025 + Math.random() * 0.04,
+        phase:      Math.random() * Math.PI * 2,
+        startH:     Math.random() * 5   // stagger phases so not all sync
+      })
+    }
+    return out
+  }, [planet])
+
+  const dummy = useMemo(() => new THREE.Object3D(), [])
+
+  useFrame((rs) => {
+    if (!meshRef.current || seeds.length === 0) return
+    const t = rs.clock.elapsedTime
+    seeds.forEach((s, i) => {
+      const { right, fwd } = tangentFrame(s.dir)
+      const rise = ((s.startH + t * s.riseSpeed) % 5)          // 0–5 units above water
+      const h    = s.waterR + rise + 0.2
+      const dX   = Math.sin(t * s.driftSpeed + s.phase) * 3.5
+      const dZ   = Math.cos(t * s.driftSpeed * 0.7 + s.phase) * 3.5
+      dummy.position.copy(s.dir).multiplyScalar(h).addScaledVector(right, dX).addScaledVector(fwd, dZ)
+      const fadeIn = Math.min(1, rise)
+      const fadeOut = 1 - rise / 5
+      dummy.scale.setScalar((0.4 * fadeIn * fadeOut + 0.08) * 2.5)
+      dummy.updateMatrix()
+      meshRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    meshRef.current.instanceMatrix.needsUpdate = true
+  })
+
+  if (seeds.length === 0) return null
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, seeds.length]} frustumCulled={false}>
+      <sphereGeometry args={[0.5, 5, 4]} />
+      <meshBasicMaterial color="#cce8f8" transparent opacity={0.28} />
+    </instancedMesh>
+  )
+}
+
+// ── Fireflies — hover 1–4 units above ground near villages ──
+function Fireflies({ planet, timeRef, villages }) {
+  const meshRef = useRef()
+  const COUNT = 80
+
+  const seeds = useMemo(() => {
+    if (!villages || villages.length === 0) return []
+    return Array.from({ length: COUNT }, (_, i) => {
+      const village = villages[i % villages.length]
+      const up      = village.center.clone().normalize()
+      const { right, fwd } = tangentFrame(up)
+      const angle  = Math.random() * Math.PI * 2
+      const dist   = 4 + Math.random() * 22
+      const offset = right.clone().multiplyScalar(Math.cos(angle) * dist)
+        .addScaledVector(fwd, Math.sin(angle) * dist)
+      const dir = up.clone().multiplyScalar(planet.radius).add(offset).normalize()
+      // Pre-compute the exact surface radius at this spot
+      const surfR = planet.surfaceRadius(dir.x, dir.y, dir.z)
+      return {
+        dir,
+        surfR,
+        speed:       0.25 + Math.random() * 0.45,
+        phase:       Math.random() * Math.PI * 2,
+        blinkSpeed:  1.5 + Math.random() * 3.5,
+        hoverHeight: 1.2 + Math.random() * 2.8,   // 1–4 units ABOVE ground
+        orbitR:      0.6 + Math.random() * 1.8
+      }
+    })
+  }, [planet, villages])
+
+  const dummy = useMemo(() => new THREE.Object3D(), [])
+
+  useFrame((rs) => {
+    if (!meshRef.current || seeds.length === 0) return
+    const t    = rs.clock.elapsedTime
+    const hour = (timeRef.current || 0.5) * 24
+    const visible = hour >= 18.5 || hour < 5.5
+
+    seeds.forEach((s, i) => {
+      const { right, fwd } = tangentFrame(s.dir)
+      const angle = t * s.speed + s.phase
+      const h     = s.surfR + s.hoverHeight + Math.sin(t * 1.8 + s.phase) * 0.4
+      dummy.position.copy(s.dir).multiplyScalar(h)
+        .addScaledVector(right, Math.cos(angle) * s.orbitR)
+        .addScaledVector(fwd,   Math.sin(angle) * s.orbitR)
+      const blink = visible ? Math.max(0, Math.sin(t * s.blinkSpeed + s.phase)) : 0
+      dummy.scale.setScalar(0.28 * blink)
+      dummy.updateMatrix()
+      meshRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    meshRef.current.instanceMatrix.needsUpdate = true
+  })
+
+  if (seeds.length === 0) return null
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, seeds.length]} frustumCulled={false}>
+      <sphereGeometry args={[0.2, 4, 3]} />
+      <meshBasicMaterial color="#bbff44" />
+    </instancedMesh>
+  )
+}
+
+// ── Desert Dust — swirls 0.5–5 units above desert ground ──
+function DesertDust({ planet }) {
+  const meshRef = useRef()
+
+  const seeds = useMemo(() => {
+    const out = []
+    let attempts = 0
+    while (out.length < 100 && attempts < 1200) {
+      attempts++
+      const u     = Math.random() * 2 - 1
+      const theta = Math.random() * Math.PI * 2
+      const rr    = Math.sqrt(1 - u * u)
+      const dir   = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+      if (planet.sampleBiome(dir.x, dir.y, dir.z) !== 'desert') continue
+      const surfR = planet.surfaceRadius(dir.x, dir.y, dir.z)
+      out.push({
+        dir,
+        surfR,
+        driftSpeed: 0.12 + Math.random() * 0.18,
+        phase:      Math.random() * Math.PI * 2,
+        height:     0.6 + Math.random() * 4.5   // 0.6–5 above ground
+      })
+    }
+    return out
+  }, [planet])
+
+  const dummy = useMemo(() => new THREE.Object3D(), [])
+
+  useFrame((rs) => {
+    if (!meshRef.current || seeds.length === 0) return
+    const t = rs.clock.elapsedTime
+    seeds.forEach((s, i) => {
+      const { right, fwd } = tangentFrame(s.dir)
+      const dX = ((t * s.driftSpeed + Math.sin(t * 0.25 + s.phase) * 2.5) % 12) - 6
+      const dZ = Math.sin(t * s.driftSpeed * 0.55 + s.phase) * 3.5
+      const h  = s.surfR + s.height
+      dummy.position.copy(s.dir).multiplyScalar(h)
+        .addScaledVector(right, dX)
+        .addScaledVector(fwd,   dZ)
+      dummy.rotation.set(t * 0.8 + s.phase, t * 1.2 + s.phase, t * 0.4)
+      dummy.scale.setScalar(0.22)
+      dummy.updateMatrix()
+      meshRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    meshRef.current.instanceMatrix.needsUpdate = true
+  })
+
+  if (seeds.length === 0) return null
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, seeds.length]} frustumCulled={false}>
+      <octahedronGeometry args={[0.25, 0]} />
+      <meshBasicMaterial color="#d4b870" transparent opacity={0.5} />
+    </instancedMesh>
+  )
+}
+
+// ── Sun Light ──
 function SunLight({ timeOfDay }) {
   const lightRef = useRef()
   useFrame(() => {
@@ -261,11 +602,8 @@ function SunLight({ timeOfDay }) {
     lightRef.current.position.set(Math.cos(sunAngle) * dist, Math.sin(sunAngle) * dist, 0)
     lightRef.current.target.position.set(0, 0, 0)
     lightRef.current.target.updateMatrixWorld()
-
-    // Intensity falls off at night
     const above = Math.max(0, Math.sin(sunAngle))
     lightRef.current.intensity = 0.3 + above * 1.6
-    // Color: warm at horizon, white at noon
     const warmth = 1 - Math.min(1, above * 1.5)
     const c = new THREE.Color('#fff5d6').lerp(new THREE.Color('#ff9a5a'), warmth * 0.6)
     lightRef.current.color.copy(c)

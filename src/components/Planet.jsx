@@ -1,4 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import {
   createPlanet,
@@ -34,10 +35,10 @@ export default function Planet({ config, season, onReady, children }) {
   }, [planet, season])
 
   const decor    = useMemo(() => scatterDecorations(planet), [planet])
-  const villages = useMemo(() => generateVillages(planet, 7), [planet])
+  const villages = useMemo(() => generateVillages(planet, 9), [planet])
   const { segments: roadSegs, lamps } = useMemo(() => generateRoads(planet, villages), [planet, villages])
   const grass    = useMemo(() => scatterGrass(planet, villages), [planet, villages])
-  const props    = useMemo(() => scatterVillageProps(villages), [villages])
+  const props    = useMemo(() => scatterVillageProps(villages, planet), [villages, planet])
 
   useEffect(() => { onReady?.() }, [planet, decor, villages])
 
@@ -47,10 +48,7 @@ export default function Planet({ config, season, onReady, children }) {
         <meshStandardMaterial vertexColors flatShading roughness={0.95} />
       </mesh>
 
-      <mesh>
-        <icosahedronGeometry args={[planet.waterRadius, 6]} />
-        <meshStandardMaterial color="#1f4f7a" transparent opacity={0.85} roughness={0.15} metalness={0.2} flatShading />
-      </mesh>
+      <Ocean planet={planet} />
 
       <DecorationField items={decor.trees}     kind="tree" />
       <DecorationField items={decor.pines}     kind="pine" />
@@ -69,7 +67,7 @@ export default function Planet({ config, season, onReady, children }) {
       {villages.map((v, i) => <Village key={i} village={v} />)}
       <PropField props={props} />
 
-      {children?.(planet)}
+      {children?.(planet, villages)}
     </group>
   )
 }
@@ -207,8 +205,8 @@ function DecorationField({ items, kind, season = 1 }) {
   if (items.length === 0) return null
   return (
     <>
-      <instancedMesh ref={canopyRef} args={[canopyGeo, canopyMat, items.length]} castShadow receiveShadow />
-      {trunkGeo && <instancedMesh ref={trunkRef} args={[trunkGeo, trunkMat, items.length]} castShadow />}
+      <instancedMesh ref={canopyRef} args={[canopyGeo, canopyMat, items.length]} castShadow receiveShadow frustumCulled={false} />
+      {trunkGeo && <instancedMesh ref={trunkRef} args={[trunkGeo, trunkMat, items.length]} castShadow frustumCulled={false} />}
     </>
   )
 }
@@ -241,7 +239,7 @@ function GrassField({ blades, season }) {
   }, [blades])
 
   if (blades.length === 0) return null
-  return <instancedMesh ref={meshRef} args={[geo, mat, blades.length]} />
+  return <instancedMesh ref={meshRef} args={[geo, mat, blades.length]} frustumCulled={false} />
 }
 
 // Roads rendered as a series of flat box segments between consecutive path points
@@ -283,6 +281,7 @@ function RoadNetwork({ segments }) {
     g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     g.setIndex(indices)
     g.computeVertexNormals()
+    g.computeBoundingSphere()
     return g
   }, [segments])
 
@@ -291,6 +290,35 @@ function RoadNetwork({ segments }) {
     <mesh geometry={geo} receiveShadow>
       <meshStandardMaterial color="#3a2f25" flatShading roughness={0.95} />
     </mesh>
+  )
+}
+
+// Slow swirling transparent meshes to simulate low-poly waves
+function Ocean({ planet }) {
+  const water1 = useRef()
+  const water2 = useRef()
+  useFrame((rs) => {
+    const t = rs.clock.elapsedTime
+    if (water1.current) {
+      water1.current.rotation.y = t * 0.02
+      water1.current.rotation.x = t * 0.01
+    }
+    if (water2.current) {
+      water2.current.rotation.y = -t * 0.015
+      water2.current.rotation.z = t * 0.01
+    }
+  })
+  return (
+    <group>
+      <mesh ref={water1} frustumCulled={false}>
+        <icosahedronGeometry args={[planet.waterRadius, 6]} />
+        <meshStandardMaterial color="#226699" transparent opacity={0.65} roughness={0.1} metalness={0.1} flatShading />
+      </mesh>
+      <mesh ref={water2} scale={1.002} frustumCulled={false}>
+        <icosahedronGeometry args={[planet.waterRadius, 6]} />
+        <meshStandardMaterial color="#1f4f7a" transparent opacity={0.55} roughness={0.1} metalness={0.2} flatShading />
+      </mesh>
+    </group>
   )
 }
 
@@ -329,72 +357,218 @@ function StreetLamps({ items }) {
   if (items.length === 0) return null
   return (
     <>
-      <instancedMesh ref={poleRef} args={[poleGeo, poleMat, items.length]} castShadow />
-      <instancedMesh ref={bulbRef} args={[bulbGeo, bulbMat, items.length]} />
+      <instancedMesh ref={poleRef} args={[poleGeo, poleMat, items.length]} castShadow frustumCulled={false} />
+      <instancedMesh ref={bulbRef} args={[bulbGeo, bulbMat, items.length]} frustumCulled={false} />
     </>
   )
 }
 
-// Static props: barrels and carts near houses
+// Static props: many types — barrel, cart, bench, well, fence, lantern, crate, flowerbox
 function PropField({ props }) {
   const worldUp = new THREE.Vector3(0, 1, 0)
   return (
     <group>
       {props.map((p, i) => {
-        const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, p.normal)
+        const upQ  = new THREE.Quaternion().setFromUnitVectors(worldUp, p.normal)
         const yawQ = new THREE.Quaternion().setFromAxisAngle(p.normal, p.rotY)
         return (
           <group key={i} position={p.position} quaternion={yawQ.clone().multiply(upQ)} scale={p.scale}>
-            {p.type === 'barrel' ? (
-              <>
-                <mesh position={[0, 0.55, 0]} castShadow>
-                  <cylinderGeometry args={[0.4, 0.35, 1.1, 10]} />
-                  <meshStandardMaterial color="#6a4525" flatShading />
-                </mesh>
-                <mesh position={[0, 0.85, 0]}>
-                  <cylinderGeometry args={[0.42, 0.42, 0.08, 10]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-                <mesh position={[0, 0.3, 0]}>
-                  <cylinderGeometry args={[0.42, 0.42, 0.08, 10]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-              </>
-            ) : (
-              <>
-                {/* Cart body */}
-                <mesh position={[0, 0.75, 0]} castShadow>
-                  <boxGeometry args={[1.6, 0.5, 0.9]} />
-                  <meshStandardMaterial color="#7a4a20" flatShading />
-                </mesh>
-                {/* Wheels */}
-                <mesh position={[0.55, 0.35, 0.5]} rotation={[Math.PI / 2, 0, 0]}>
-                  <cylinderGeometry args={[0.35, 0.35, 0.1, 8]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-                <mesh position={[-0.55, 0.35, 0.5]} rotation={[Math.PI / 2, 0, 0]}>
-                  <cylinderGeometry args={[0.35, 0.35, 0.1, 8]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-                <mesh position={[0.55, 0.35, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
-                  <cylinderGeometry args={[0.35, 0.35, 0.1, 8]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-                <mesh position={[-0.55, 0.35, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
-                  <cylinderGeometry args={[0.35, 0.35, 0.1, 8]} />
-                  <meshStandardMaterial color="#3a2515" flatShading />
-                </mesh>
-                {/* Handle */}
-                <mesh position={[1.0, 0.9, 0]} rotation={[0, 0, -0.3]}>
-                  <boxGeometry args={[0.9, 0.08, 0.08]} />
-                  <meshStandardMaterial color="#5a3515" flatShading />
-                </mesh>
-              </>
-            )}
+            {p.type === 'barrel'    && <PropBarrel />}
+            {p.type === 'cart'      && <PropCart />}
+            {p.type === 'bench'     && <PropBench />}
+            {p.type === 'well'      && <PropWell />}
+            {p.type === 'fence'     && <PropFence />}
+            {p.type === 'lantern'   && <PropLantern />}
+            {p.type === 'crate'     && <PropCrate />}
+            {p.type === 'flowerbox' && <PropFlowerbox />}
           </group>
         )
       })}
     </group>
+  )
+}
+
+function PropBarrel() {
+  return (
+    <>
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <cylinderGeometry args={[0.4, 0.35, 1.1, 8]} />
+        <meshStandardMaterial color="#6a4525" flatShading />
+      </mesh>
+      <mesh position={[0, 0.78, 0]}>
+        <cylinderGeometry args={[0.42, 0.42, 0.07, 8]} />
+        <meshStandardMaterial color="#3a2010" flatShading />
+      </mesh>
+      <mesh position={[0, 0.32, 0]}>
+        <cylinderGeometry args={[0.42, 0.42, 0.07, 8]} />
+        <meshStandardMaterial color="#3a2010" flatShading />
+      </mesh>
+    </>
+  )
+}
+
+function PropCart() {
+  return (
+    <>
+      <mesh position={[0, 0.75, 0]} castShadow>
+        <boxGeometry args={[1.6, 0.5, 0.9]} />
+        <meshStandardMaterial color="#7a4a20" flatShading />
+      </mesh>
+      {[[ 0.55, 0.5], [-0.55, 0.5], [0.55, -0.5], [-0.55, -0.5]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.35, z]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.32, 0.32, 0.09, 8]} />
+          <meshStandardMaterial color="#3a2010" flatShading />
+        </mesh>
+      ))}
+      <mesh position={[1.1, 0.85, 0]} rotation={[0, 0, -0.25]}>
+        <boxGeometry args={[0.8, 0.07, 0.07]} />
+        <meshStandardMaterial color="#5a3010" flatShading />
+      </mesh>
+    </>
+  )
+}
+
+function PropBench() {
+  return (
+    <>
+      {/* Seat */}
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <boxGeometry args={[1.8, 0.12, 0.55]} />
+        <meshStandardMaterial color="#8a5a28" flatShading />
+      </mesh>
+      {/* Back */}
+      <mesh position={[0, 0.9, -0.22]} rotation={[0.15, 0, 0]}>
+        <boxGeometry args={[1.8, 0.45, 0.1]} />
+        <meshStandardMaterial color="#7a4a20" flatShading />
+      </mesh>
+      {/* Legs */}
+      {[[-0.7, 0.3], [0.7, 0.3], [-0.7, -0.3], [0.7, -0.3]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.27, z]}>
+          <boxGeometry args={[0.1, 0.55, 0.1]} />
+          <meshStandardMaterial color="#5a3010" flatShading />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+function PropWell() {
+  return (
+    <>
+      {/* Stone ring */}
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <cylinderGeometry args={[0.9, 1.0, 1.1, 10, 1, true]} />
+        <meshStandardMaterial color="#8a7a60" flatShading side={2} />
+      </mesh>
+      {/* Top ring */}
+      <mesh position={[0, 1.12, 0]}>
+        <torusGeometry args={[0.9, 0.1, 6, 12]} />
+        <meshStandardMaterial color="#6a5a44" flatShading />
+      </mesh>
+      {/* Roof supports */}
+      {[[-0.8, -0.8], [0.8, -0.8], [-0.8, 0.8], [0.8, 0.8]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 1.8, z]}>
+          <cylinderGeometry args={[0.06, 0.06, 1.5, 5]} />
+          <meshStandardMaterial color="#5a3a18" flatShading />
+        </mesh>
+      ))}
+      {/* Roof */}
+      <mesh position={[0, 2.7, 0]}>
+        <coneGeometry args={[1.3, 0.8, 4]} />
+        <meshStandardMaterial color="#7a3a20" flatShading />
+      </mesh>
+      {/* Rope drum */}
+      <mesh position={[0, 1.7, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.12, 0.12, 1.4, 6]} />
+        <meshStandardMaterial color="#5a3a18" flatShading />
+      </mesh>
+      {/* Water bucket */}
+      <mesh position={[0.5, 1.2, 0]}>
+        <cylinderGeometry args={[0.18, 0.14, 0.35, 7]} />
+        <meshStandardMaterial color="#4a3010" flatShading />
+      </mesh>
+    </>
+  )
+}
+
+function PropFence() {
+  return (
+    <>
+      {/* Two horizontal rails */}
+      <mesh position={[0, 0.65, 0]}>
+        <boxGeometry args={[1.5, 0.08, 0.07]} />
+        <meshStandardMaterial color="#6a4520" flatShading />
+      </mesh>
+      <mesh position={[0, 0.35, 0]}>
+        <boxGeometry args={[1.5, 0.08, 0.07]} />
+        <meshStandardMaterial color="#6a4520" flatShading />
+      </mesh>
+      {/* Posts */}
+      {[-0.65, 0, 0.65].map((x, i) => (
+        <mesh key={i} position={[x, 0.45, 0]}>
+          <boxGeometry args={[0.1, 0.9, 0.1]} />
+          <meshStandardMaterial color="#5a3515" flatShading />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+function PropLantern() {
+  return (
+    <>
+      {/* Pole */}
+      <mesh position={[0, 1.2, 0]} castShadow>
+        <cylinderGeometry args={[0.05, 0.07, 2.4, 6]} />
+        <meshStandardMaterial color="#2a2a2a" flatShading />
+      </mesh>
+      {/* Arm */}
+      <mesh position={[0.3, 2.3, 0]}>
+        <boxGeometry args={[0.6, 0.06, 0.06]} />
+        <meshStandardMaterial color="#2a2a2a" flatShading />
+      </mesh>
+      {/* Lantern cage */}
+      <mesh position={[0.6, 2.15, 0]}>
+        <boxGeometry args={[0.28, 0.35, 0.28]} />
+        <meshStandardMaterial color="#444" flatShading wireframe />
+      </mesh>
+      {/* Glowing bulb */}
+      <mesh position={[0.6, 2.15, 0]}>
+        <sphereGeometry args={[0.14, 6, 5]} />
+        <meshStandardMaterial color="#ffd888" emissive="#ffaa22" emissiveIntensity={1.8} flatShading />
+      </mesh>
+    </>
+  )
+}
+
+function PropCrate() {
+  return (
+    <mesh position={[0, 0.35, 0]} castShadow>
+      <boxGeometry args={[0.7, 0.7, 0.7]} />
+      <meshStandardMaterial color="#7a5a2a" flatShading />
+    </mesh>
+  )
+}
+
+function PropFlowerbox() {
+  return (
+    <>
+      <mesh position={[0, 0.2, 0]}>
+        <boxGeometry args={[1.0, 0.4, 0.35]} />
+        <meshStandardMaterial color="#6a3a1a" flatShading />
+      </mesh>
+      {[[-0.35, 0], [0, 0], [0.35, 0]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.55, z]}>
+          <sphereGeometry args={[0.18, 6, 5]} />
+          <meshStandardMaterial
+            color={['#e03060', '#ffe040', '#e060a0'][i]}
+            emissive={['#801030', '#806010', '#803060'][i]}
+            emissiveIntensity={0.3}
+            flatShading
+          />
+        </mesh>
+      ))}
+    </>
   )
 }
 
