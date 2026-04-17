@@ -24,7 +24,8 @@ export default function Player({
   onCameraModeChange,
   onInteract,
   isPaused,
-  appearance
+  appearance,
+  spawnVillage
 }) {
   const { camera, gl } = useThree()
   const groupRef = useRef()
@@ -43,21 +44,26 @@ export default function Player({
     lookDir: new THREE.Vector3(0, 0, 1)
   }).current
 
-  // Spawn on a known land spot using the raycast sampler for exact placement
+  // Spawn at a village center so the player lands in the middle of life,
+  // not a random land spot on the far side of the sphere.
   useMemo(() => {
-    let dir = new THREE.Vector3(0.2, 0.6, 0.7).normalize()
-    for (let i = 0; i < 100; i++) {
-      if (planet.isLand(dir.x, dir.y, dir.z) && Math.abs(dir.y) < 0.7) break
-      dir.set(Math.random() - 0.5, (Math.random() - 0.5) * 1.4, Math.random() - 0.5).normalize()
+    let dir
+    if (spawnVillage?.center) {
+      dir = spawnVillage.center.clone().normalize()
+    } else {
+      dir = new THREE.Vector3(0.2, 0.6, 0.7).normalize()
+      for (let i = 0; i < 100; i++) {
+        if (planet.isLand(dir.x, dir.y, dir.z) && Math.abs(dir.y) < 0.7) break
+        dir.set(Math.random() - 0.5, (Math.random() - 0.5) * 1.4, Math.random() - 0.5).normalize()
+      }
     }
-    // Use raycast sampler for exact ground position, then drop in from slightly above
     const groundPt = planet.groundSampler.getGroundPoint(dir)
     state.position.copy(groundPt).addScaledVector(dir, 0.3)
     const ref = Math.abs(dir.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
     const right = new THREE.Vector3().crossVectors(ref, dir).normalize()
     state.lookDir.crossVectors(dir, right).normalize()
     state.facing.copy(state.lookDir)
-  }, [planet])
+  }, [planet, spawnVillage])
 
   // Pointer lock + key handlers
   useEffect(() => {

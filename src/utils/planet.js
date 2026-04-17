@@ -185,8 +185,8 @@ export function scatterDecorations(planet, seed = 42) {
   let s = seed
   const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
 
-  // Much denser world — 3000 decorations instead of 900
-  const TARGET = 3000
+  // Much denser world — 8000 decorations spread across the whole planet
+  const TARGET = 8000
   let attempts = 0
   let placed = 0
 
@@ -482,4 +482,269 @@ export function scatterVillageProps(villages, planet, seed = 88) {
     }
   })
   return props
+}
+
+// Farms: crop rows + penned animals just outside each village.
+// Crops biased by biome (desert → none, tundra → sparse).
+export function scatterFarms(planet, villages, seed = 123) {
+  const crops = []       // individual crop "plants"
+  const pens = []        // wooden pens (rectangular)
+  const animals = []     // {position, normal, rotY, type: 'sheep'|'cow'|'chicken'|'pig'}
+  let s = seed
+  const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
+
+  const worldUp = new THREE.Vector3(0, 1, 0)
+
+  villages.forEach(village => {
+    const biome = village.biome
+    if (biome === planet.BIOMES.DESERT && rand() < 0.4) return
+    if (biome === planet.BIOMES.TUNDRA && rand() < 0.6) return
+
+    const up    = village.center.clone().normalize()
+    const ref   = Math.abs(up.y) < 0.95 ? worldUp : new THREE.Vector3(1, 0, 0)
+    const right = new THREE.Vector3().crossVectors(ref, up).normalize()
+    const fwd   = new THREE.Vector3().crossVectors(up, right).normalize()
+
+    // ── 1-2 crop fields, 25-40 units from center (outside the house cluster) ──
+    const fieldCount = 1 + Math.floor(rand() * 2)
+    for (let f = 0; f < fieldCount; f++) {
+      const fieldAngle = rand() * Math.PI * 2
+      const fieldDist  = 28 + rand() * 10
+      const fieldCenter = right.clone().multiplyScalar(Math.cos(fieldAngle) * fieldDist)
+        .addScaledVector(fwd, Math.sin(fieldAngle) * fieldDist)
+      const fieldDir = up.clone().multiplyScalar(planet.radius).add(fieldCenter).normalize()
+      if (!planet.isLand(fieldDir.x, fieldDir.y, fieldDir.z)) continue
+      const fb = planet.sampleBiome(fieldDir.x, fieldDir.y, fieldDir.z)
+      if (fb === planet.BIOMES.OCEAN || fb === planet.BIOMES.MOUNTAIN || fb === planet.BIOMES.SNOW) continue
+
+      // Pick crop type based on biome
+      const cropType =
+        biome === planet.BIOMES.DESERT ? 'dates'
+        : biome === planet.BIOMES.JUNGLE ? 'cassava'
+        : biome === planet.BIOMES.TUNDRA ? 'cabbage'
+        : rand() < 0.5 ? 'wheat' : rand() < 0.5 ? 'corn' : 'pumpkin'
+
+      // 6x4 grid of crops
+      const rows = 6, cols = 4, spacing = 1.6
+      for (let rIdx = 0; rIdx < rows; rIdx++) {
+        for (let cIdx = 0; cIdx < cols; cIdx++) {
+          const lx = (rIdx - (rows - 1) / 2) * spacing
+          const lz = (cIdx - (cols - 1) / 2) * spacing
+          const off = right.clone().multiplyScalar(Math.cos(fieldAngle) * fieldDist + lx)
+            .addScaledVector(fwd, Math.sin(fieldAngle) * fieldDist + lz)
+          const cropDir = up.clone().multiplyScalar(planet.radius).add(off).normalize()
+          if (!planet.isLand(cropDir.x, cropDir.y, cropDir.z)) continue
+          const p = planet.groundSampler.getGroundPoint(cropDir)
+          crops.push({
+            position: p,
+            normal: cropDir.clone(),
+            rotY: rand() * Math.PI * 2,
+            scale: 0.8 + rand() * 0.3,
+            type: cropType
+          })
+        }
+      }
+    }
+
+    // ── 1 animal pen, opposite side from field ──
+    const penAngle = rand() * Math.PI * 2
+    const penDist  = 22 + rand() * 8
+    const penOff = right.clone().multiplyScalar(Math.cos(penAngle) * penDist)
+      .addScaledVector(fwd, Math.sin(penAngle) * penDist)
+    const penDir = up.clone().multiplyScalar(planet.radius).add(penOff).normalize()
+    if (planet.isLand(penDir.x, penDir.y, penDir.z)) {
+      const pb = planet.sampleBiome(penDir.x, penDir.y, penDir.z)
+      if (pb !== planet.BIOMES.OCEAN && pb !== planet.BIOMES.MOUNTAIN && pb !== planet.BIOMES.SNOW) {
+        const penPos = planet.groundSampler.getGroundPoint(penDir)
+        pens.push({ position: penPos, normal: penDir.clone(), rotY: penAngle, scale: 1.0 })
+
+        // Animals inside the pen — type depends on biome
+        const animalType =
+          biome === planet.BIOMES.DESERT ? 'goat'
+          : biome === planet.BIOMES.TUNDRA ? 'reindeer'
+          : biome === planet.BIOMES.JUNGLE ? 'pig'
+          : rand() < 0.4 ? 'sheep' : rand() < 0.6 ? 'cow' : 'chicken'
+        const count = animalType === 'chicken' ? 6 : 4
+        for (let a = 0; a < count; a++) {
+          const ang = rand() * Math.PI * 2
+          const d   = rand() * 3
+          const off = right.clone().multiplyScalar(Math.cos(penAngle) * penDist + Math.cos(ang) * d)
+            .addScaledVector(fwd, Math.sin(penAngle) * penDist + Math.sin(ang) * d)
+          const aDir = up.clone().multiplyScalar(planet.radius).add(off).normalize()
+          if (!planet.isLand(aDir.x, aDir.y, aDir.z)) continue
+          const aPos = planet.groundSampler.getGroundPoint(aDir)
+          animals.push({
+            position: aPos,
+            normal: aDir.clone(),
+            rotY: rand() * Math.PI * 2,
+            type: animalType,
+            phase: rand() * Math.PI * 2
+          })
+        }
+      }
+    }
+  })
+
+  return { crops, pens, animals }
+}
+
+// Wild animals scattered across forest/meadow/jungle biomes.
+export function scatterWildlife(planet, seed = 222) {
+  const wild = []
+  let s = seed
+  const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
+
+  const TARGET = 500
+  let attempts = 0
+  while (wild.length < TARGET && attempts < TARGET * 6) {
+    attempts++
+    const u = rand() * 2 - 1
+    const theta = rand() * Math.PI * 2
+    const rr = Math.sqrt(1 - u * u)
+    const dir = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+    if (!planet.isLand(dir.x, dir.y, dir.z)) continue
+    const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
+    let type = null
+    if (biome === planet.BIOMES.FOREST)       type = rand() < 0.55 ? 'deer' : rand() < 0.5 ? 'rabbit' : 'fox'
+    else if (biome === planet.BIOMES.MEADOW)  type = rand() < 0.5 ? 'rabbit' : 'deer'
+    else if (biome === planet.BIOMES.JUNGLE)  type = rand() < 0.5 ? 'monkey' : 'tapir'
+    else if (biome === planet.BIOMES.TUNDRA)  type = rand() < 0.7 ? 'reindeer' : 'fox'
+    else if (biome === planet.BIOMES.DESERT && rand() < 0.3) type = 'camel'
+    if (!type) continue
+    const pos = planet.groundSampler.getGroundPoint(dir)
+    wild.push({
+      position: pos,
+      normal: dir.clone(),
+      rotY: rand() * Math.PI * 2,
+      type,
+      wanderRadius: 4 + rand() * 6,
+      speed: 0.3 + rand() * 0.4,
+      phase: rand() * Math.PI * 2
+    })
+  }
+  return wild
+}
+
+// Iconic world landmarks scattered far apart. Each appears at most once.
+export function scatterLandmarks(planet, villages, seed = 555) {
+  const out = []
+  let s = seed
+  const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
+
+  // Each landmark prefers a biome. Some repeat (e.g. 3 windmills, 2 pagodas).
+  const schedule = [
+    'eiffel',
+    'lighthouse', 'lighthouse',
+    'pyramid', 'pyramid',
+    'statue',
+    'colosseum',
+    'pagoda', 'pagoda',
+    'windmill', 'windmill', 'windmill'
+  ]
+  const biomePrefs = {
+    eiffel:     [planet.BIOMES.MEADOW, planet.BIOMES.FOREST],
+    lighthouse: [planet.BIOMES.BEACH],
+    pyramid:    [planet.BIOMES.DESERT],
+    statue:     [planet.BIOMES.BEACH, planet.BIOMES.MEADOW],
+    colosseum:  [planet.BIOMES.MEADOW, planet.BIOMES.DESERT],
+    pagoda:     [planet.BIOMES.JUNGLE, planet.BIOMES.FOREST],
+    windmill:   [planet.BIOMES.MEADOW, planet.BIOMES.TUNDRA]
+  }
+
+  const MIN_DIST_FROM_VILLAGE = 45   // so landmarks don't overlap houses
+  const MIN_DIST_BETWEEN = 55        // landmarks spread out
+
+  schedule.forEach(type => {
+    const prefs = biomePrefs[type]
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const u = rand() * 2 - 1
+      const theta = rand() * Math.PI * 2
+      const rr = Math.sqrt(1 - u * u)
+      const dir = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+      if (!planet.isLand(dir.x, dir.y, dir.z)) continue
+      if (Math.abs(dir.y) > 0.85) continue
+      const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
+      if (!prefs.includes(biome)) continue
+
+      const pos = planet.groundSampler.getGroundPoint(dir)
+      // far from villages
+      let tooClose = false
+      for (const v of villages) {
+        const vp = planet.groundSampler.getGroundPoint(v.center.clone().normalize())
+        if (pos.distanceTo(vp) < MIN_DIST_FROM_VILLAGE) { tooClose = true; break }
+      }
+      if (tooClose) continue
+      for (const lm of out) {
+        if (pos.distanceTo(lm.position) < MIN_DIST_BETWEEN) { tooClose = true; break }
+      }
+      if (tooClose) continue
+
+      out.push({ position: pos, normal: dir.clone(), rotY: rand() * Math.PI * 2, type })
+      break
+    }
+  })
+  return out
+}
+
+// Wilderness outposts — small human/natural markers scattered FAR from villages
+// so the empty stretches of planet feel inhabited. Shrines, ruins, campfires,
+// standing stones, lone cabins, abandoned wells, signposts.
+export function scatterOutposts(planet, villages, landmarks, seed = 777) {
+  const out = []
+  let s = seed
+  const rand = () => { s = (s * 16807) % 2147483647; return s / 2147483647 }
+
+  const types = ['shrine', 'ruin', 'campfire', 'standingStones', 'loneCabin', 'oldWell', 'signpost']
+  // how many of each across the planet
+  const counts = {
+    shrine: 14,
+    ruin: 10,
+    campfire: 20,
+    standingStones: 8,
+    loneCabin: 12,
+    oldWell: 10,
+    signpost: 18
+  }
+  const MIN_DIST_FROM_VILLAGE = 35
+  const MIN_DIST_FROM_LANDMARK = 30
+  const MIN_DIST_BETWEEN = 22
+
+  types.forEach(type => {
+    const target = counts[type] || 5
+    let placed = 0
+    let attempts = 0
+    while (placed < target && attempts < target * 40) {
+      attempts++
+      const u = rand() * 2 - 1
+      const theta = rand() * Math.PI * 2
+      const rr = Math.sqrt(1 - u * u)
+      const dir = new THREE.Vector3(rr * Math.cos(theta), u, rr * Math.sin(theta))
+      if (!planet.isLand(dir.x, dir.y, dir.z)) continue
+      const biome = planet.sampleBiome(dir.x, dir.y, dir.z)
+      if (biome === planet.BIOMES.OCEAN) continue
+      // Campfires/cabins avoid the harshest biomes
+      if ((type === 'loneCabin' || type === 'campfire') && (biome === planet.BIOMES.MOUNTAIN || biome === planet.BIOMES.SNOW)) continue
+
+      const pos = planet.groundSampler.getGroundPoint(dir)
+
+      let tooClose = false
+      for (const v of villages) {
+        const vp = planet.groundSampler.getGroundPoint(v.center.clone().normalize())
+        if (pos.distanceTo(vp) < MIN_DIST_FROM_VILLAGE) { tooClose = true; break }
+      }
+      if (tooClose) continue
+      for (const lm of (landmarks || [])) {
+        if (pos.distanceTo(lm.position) < MIN_DIST_FROM_LANDMARK) { tooClose = true; break }
+      }
+      if (tooClose) continue
+      for (const o of out) {
+        if (pos.distanceTo(o.position) < MIN_DIST_BETWEEN) { tooClose = true; break }
+      }
+      if (tooClose) continue
+
+      out.push({ position: pos, normal: dir.clone(), rotY: rand() * Math.PI * 2, type })
+      placed++
+    }
+  })
+  return out
 }

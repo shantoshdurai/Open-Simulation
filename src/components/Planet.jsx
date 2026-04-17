@@ -8,7 +8,11 @@ import {
   generateVillages,
   generateRoads,
   scatterGrass,
-  scatterVillageProps
+  scatterVillageProps,
+  scatterFarms,
+  scatterWildlife,
+  scatterLandmarks,
+  scatterOutposts
 } from '../utils/planet.js'
 
 // SCALE REFERENCE (world units, player = 1.8 units tall)
@@ -39,6 +43,10 @@ export default function Planet({ config, season, onReady, children }) {
   const { segments: roadSegs, lamps } = useMemo(() => generateRoads(planet, villages), [planet, villages])
   const grass    = useMemo(() => scatterGrass(planet, villages), [planet, villages])
   const props    = useMemo(() => scatterVillageProps(villages, planet), [villages, planet])
+  const farms    = useMemo(() => scatterFarms(planet, villages), [planet, villages])
+  const wildlife = useMemo(() => scatterWildlife(planet), [planet])
+  const landmarks = useMemo(() => scatterLandmarks(planet, villages), [planet, villages])
+  const outposts  = useMemo(() => scatterOutposts(planet, villages, landmarks), [planet, villages, landmarks])
 
   useEffect(() => { onReady?.() }, [planet, decor, villages])
 
@@ -66,6 +74,13 @@ export default function Planet({ config, season, onReady, children }) {
 
       {villages.map((v, i) => <Village key={i} village={v} />)}
       <PropField props={props} />
+
+      <CropField crops={farms.crops} />
+      <PenField pens={farms.pens} />
+      <AnimalField animals={farms.animals} />
+      <WildlifeField wildlife={wildlife} />
+      <LandmarkField landmarks={landmarks} />
+      <OutpostField outposts={outposts} />
 
       {children?.(planet, villages)}
     </group>
@@ -730,6 +745,581 @@ function Market({ pos, quat, scale, wallColor }) {
         <sphereGeometry args={[0.2, 6, 5]} />
         <meshStandardMaterial color="#d04a20" flatShading />
       </mesh>
+    </group>
+  )
+}
+
+// ── Crops (wheat, corn, pumpkin, cabbage, dates, cassava) ─────────────────
+function CropField({ crops }) {
+  const worldUp = new THREE.Vector3(0, 1, 0)
+  const byType = useMemo(() => {
+    const m = {}
+    crops.forEach(c => { (m[c.type] ||= []).push(c) })
+    return m
+  }, [crops])
+
+  return (
+    <group>
+      {Object.entries(byType).map(([type, items]) => (
+        <CropInstances key={type} type={type} items={items} worldUp={worldUp} />
+      ))}
+    </group>
+  )
+}
+
+function CropInstances({ type, items, worldUp }) {
+  const canopyRef = useRef()
+  const stemRef = useRef()
+
+  const { canopyGeo, canopyColor, stemGeo, stemColor } = useMemo(() => {
+    switch (type) {
+      case 'wheat':
+        return {
+          canopyGeo: new THREE.ConeGeometry(0.18, 0.55, 4).translate(0, 0.85, 0),
+          canopyColor: '#d9b962',
+          stemGeo: new THREE.CylinderGeometry(0.03, 0.03, 0.7, 3).translate(0, 0.35, 0),
+          stemColor: '#7a8a3a'
+        }
+      case 'corn':
+        return {
+          canopyGeo: new THREE.CylinderGeometry(0.12, 0.1, 0.45, 5).translate(0, 1.0, 0),
+          canopyColor: '#f0c040',
+          stemGeo: new THREE.CylinderGeometry(0.05, 0.05, 1.1, 4).translate(0, 0.55, 0),
+          stemColor: '#3a7a3a'
+        }
+      case 'pumpkin':
+        return {
+          canopyGeo: new THREE.SphereGeometry(0.35, 7, 5).translate(0, 0.3, 0),
+          canopyColor: '#e07020',
+          stemGeo: new THREE.CylinderGeometry(0.04, 0.05, 0.12, 4).translate(0, 0.55, 0),
+          stemColor: '#3a5a2a'
+        }
+      case 'cabbage':
+        return {
+          canopyGeo: new THREE.SphereGeometry(0.3, 6, 4).translate(0, 0.2, 0),
+          canopyColor: '#6aaa4a',
+          stemGeo: null, stemColor: null
+        }
+      case 'dates':
+        return {
+          canopyGeo: new THREE.SphereGeometry(0.7, 6, 4).translate(0, 2.5, 0),
+          canopyColor: '#5a9a3a',
+          stemGeo: new THREE.CylinderGeometry(0.12, 0.16, 2.5, 5).translate(0, 1.25, 0),
+          stemColor: '#7a5a30'
+        }
+      case 'cassava':
+        return {
+          canopyGeo: new THREE.ConeGeometry(0.5, 0.9, 5).translate(0, 0.9, 0),
+          canopyColor: '#4a8a3a',
+          stemGeo: new THREE.CylinderGeometry(0.05, 0.07, 0.8, 4).translate(0, 0.4, 0),
+          stemColor: '#6a4520'
+        }
+      default:
+        return {
+          canopyGeo: new THREE.SphereGeometry(0.25, 6, 4).translate(0, 0.3, 0),
+          canopyColor: '#5a9a4a',
+          stemGeo: null, stemColor: null
+        }
+    }
+  }, [type])
+
+  const canopyMat = useMemo(() => new THREE.MeshStandardMaterial({ color: canopyColor, flatShading: true }), [canopyColor])
+  const stemMat = useMemo(() => stemColor ? new THREE.MeshStandardMaterial({ color: stemColor, flatShading: true }) : null, [stemColor])
+
+  useEffect(() => {
+    if (!canopyRef.current || items.length === 0) return
+    const dummy = new THREE.Object3D()
+    items.forEach((c, i) => {
+      const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, c.normal)
+      const yawQ = new THREE.Quaternion().setFromAxisAngle(c.normal, c.rotY || 0)
+      dummy.position.copy(c.position)
+      dummy.quaternion.copy(yawQ).multiply(upQ)
+      dummy.scale.setScalar(c.scale || 1)
+      dummy.updateMatrix()
+      canopyRef.current.setMatrixAt(i, dummy.matrix)
+      if (stemRef.current) stemRef.current.setMatrixAt(i, dummy.matrix)
+    })
+    canopyRef.current.instanceMatrix.needsUpdate = true
+    if (stemRef.current) stemRef.current.instanceMatrix.needsUpdate = true
+  }, [items, worldUp])
+
+  if (items.length === 0) return null
+  return (
+    <>
+      <instancedMesh ref={canopyRef} args={[canopyGeo, canopyMat, items.length]} castShadow frustumCulled={false} />
+      {stemGeo && stemMat && (
+        <instancedMesh ref={stemRef} args={[stemGeo, stemMat, items.length]} castShadow frustumCulled={false} />
+      )}
+    </>
+  )
+}
+
+// ── Animal pens: small fenced rectangles ─────────────────────────────────
+function PenField({ pens }) {
+  const worldUp = new THREE.Vector3(0, 1, 0)
+  return (
+    <group>
+      {pens.map((p, i) => {
+        const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, p.normal)
+        const yawQ = new THREE.Quaternion().setFromAxisAngle(p.normal, p.rotY)
+        const q = yawQ.clone().multiply(upQ)
+        return (
+          <group key={i} position={p.position} quaternion={q} scale={p.scale}>
+            <Pen />
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function Pen() {
+  const posts = []
+  for (let x = -3; x <= 3; x += 1.5) {
+    posts.push([x, 0, -2])
+    posts.push([x, 0, 2])
+  }
+  for (let z = -2 + 1.5; z < 2; z += 1.5) {
+    posts.push([-3, 0, z])
+    posts.push([3, 0, z])
+  }
+  return (
+    <group>
+      {posts.map(([x, , z], i) => (
+        <mesh key={i} position={[x, 0.45, z]}>
+          <boxGeometry args={[0.08, 0.9, 0.08]} />
+          <meshStandardMaterial color="#5a3515" flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.6, -2]}><boxGeometry args={[6.1, 0.06, 0.05]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+      <mesh position={[0, 0.6, 2]}><boxGeometry args={[6.1, 0.06, 0.05]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+      <mesh position={[0, 0.3, -2]}><boxGeometry args={[6.1, 0.06, 0.05]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+      <mesh position={[0, 0.3, 2]}><boxGeometry args={[6.1, 0.06, 0.05]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+      <mesh position={[-3, 0.6, 0]}><boxGeometry args={[0.05, 0.06, 4.1]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+      <mesh position={[3, 0.6, 0]}><boxGeometry args={[0.05, 0.06, 4.1]} /><meshStandardMaterial color="#6a4520" flatShading /></mesh>
+    </group>
+  )
+}
+
+// ── Animals (farm + wild) ────────────────────────────────────────────────
+function AnimalField({ animals }) { return <AnimalGroup animals={animals} /> }
+function WildlifeField({ wildlife }) { return <AnimalGroup animals={wildlife} wander /> }
+
+function AnimalGroup({ animals, wander = false }) {
+  const worldUp = new THREE.Vector3(0, 1, 0)
+  return (
+    <group>
+      {animals.map((a, i) => {
+        const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, a.normal)
+        const yawQ = new THREE.Quaternion().setFromAxisAngle(a.normal, a.rotY)
+        const q = yawQ.clone().multiply(upQ)
+        return (
+          <group key={i} position={a.position} quaternion={q}>
+            <AnimalMesh type={a.type} phase={a.phase} wander={wander} />
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function AnimalMesh({ type, phase = 0, wander = false }) {
+  const groupRef = useRef()
+  useFrame((rs) => {
+    if (!groupRef.current) return
+    const t = rs.clock.elapsedTime + phase
+    groupRef.current.position.y = Math.abs(Math.sin(t * 1.2)) * 0.03
+    if (wander) groupRef.current.rotation.y = Math.sin(t * 0.3) * 0.3
+  })
+
+  const body = ANIMAL_PRESETS[type] || ANIMAL_PRESETS.sheep
+  return (
+    <group ref={groupRef}>
+      <mesh position={[0, body.legLen + body.bodyH / 2, 0]} castShadow>
+        <boxGeometry args={[body.bodyL, body.bodyH, body.bodyW]} />
+        <meshStandardMaterial color={body.color} flatShading />
+      </mesh>
+      {body.hasHead && (
+        <mesh position={[body.bodyL / 2 + body.headSize * 0.5, body.legLen + body.bodyH * 0.75, 0]} castShadow>
+          <boxGeometry args={[body.headSize, body.headSize, body.headSize]} />
+          <meshStandardMaterial color={body.headColor || body.color} flatShading />
+        </mesh>
+      )}
+      {body.legLen > 0 && [
+        [ body.bodyL * 0.35,  body.bodyW * 0.35],
+        [ body.bodyL * 0.35, -body.bodyW * 0.35],
+        [-body.bodyL * 0.35,  body.bodyW * 0.35],
+        [-body.bodyL * 0.35, -body.bodyW * 0.35],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, body.legLen / 2, z]} castShadow>
+          <boxGeometry args={[body.legW, body.legLen, body.legW]} />
+          <meshStandardMaterial color={body.legColor || body.color} flatShading />
+        </mesh>
+      ))}
+      {body.hasTail && (
+        <mesh position={[-body.bodyL / 2 - 0.05, body.legLen + body.bodyH * 0.6, 0]}>
+          <boxGeometry args={[0.12, 0.08, 0.08]} />
+          <meshStandardMaterial color={body.color} flatShading />
+        </mesh>
+      )}
+      {body.horns === 'antlers' && (
+        <>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.5, body.legLen + body.bodyH + body.headSize * 0.5, body.headSize * 0.3]} rotation={[0, 0, 0.3]}>
+            <boxGeometry args={[0.04, 0.35, 0.04]} />
+            <meshStandardMaterial color="#7a5a3a" />
+          </mesh>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.5, body.legLen + body.bodyH + body.headSize * 0.5, -body.headSize * 0.3]} rotation={[0, 0, 0.3]}>
+            <boxGeometry args={[0.04, 0.35, 0.04]} />
+            <meshStandardMaterial color="#7a5a3a" />
+          </mesh>
+        </>
+      )}
+      {body.horns === 'cow' && (
+        <>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.5, body.legLen + body.bodyH + body.headSize * 0.4, body.headSize * 0.35]} rotation={[0, 0, 0.5]}>
+            <coneGeometry args={[0.06, 0.22, 4]} />
+            <meshStandardMaterial color="#f0e8c0" flatShading />
+          </mesh>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.5, body.legLen + body.bodyH + body.headSize * 0.4, -body.headSize * 0.35]} rotation={[0, 0, -0.5]}>
+            <coneGeometry args={[0.06, 0.22, 4]} />
+            <meshStandardMaterial color="#f0e8c0" flatShading />
+          </mesh>
+        </>
+      )}
+      {type === 'chicken' && (
+        <>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.5 + 0.08, body.legLen + body.bodyH * 0.8, 0]}>
+            <coneGeometry args={[0.04, 0.1, 4]} />
+            <meshStandardMaterial color="#e8a030" flatShading />
+          </mesh>
+          <mesh position={[body.bodyL / 2 + body.headSize * 0.2, body.legLen + body.bodyH + body.headSize * 0.4, 0]}>
+            <boxGeometry args={[0.08, 0.08, 0.05]} />
+            <meshStandardMaterial color="#d03030" flatShading />
+          </mesh>
+        </>
+      )}
+    </group>
+  )
+}
+
+const ANIMAL_PRESETS = {
+  sheep:    { bodyL: 1.1, bodyW: 0.55, bodyH: 0.55, legLen: 0.4, legW: 0.1, color: '#efe8dc', headColor: '#3a2a1a', legColor: '#3a2a1a', headSize: 0.28, hasHead: true, hasTail: true },
+  cow:      { bodyL: 1.5, bodyW: 0.7, bodyH: 0.75, legLen: 0.55, legW: 0.12, color: '#f0e4d0', headColor: '#2a1a0a', legColor: '#3a2a1a', headSize: 0.34, hasHead: true, hasTail: true, horns: 'cow' },
+  pig:      { bodyL: 1.0, bodyW: 0.5, bodyH: 0.5, legLen: 0.3, legW: 0.1, color: '#e8b0a0', headSize: 0.3, hasHead: true, hasTail: true },
+  goat:     { bodyL: 1.0, bodyW: 0.45, bodyH: 0.5, legLen: 0.45, legW: 0.09, color: '#d0c0a0', headColor: '#b0a080', headSize: 0.26, hasHead: true, hasTail: true, horns: 'antlers' },
+  reindeer: { bodyL: 1.3, bodyW: 0.55, bodyH: 0.7, legLen: 0.6, legW: 0.1, color: '#9a7a5a', headColor: '#7a5a3a', headSize: 0.32, hasHead: true, hasTail: true, horns: 'antlers' },
+  chicken:  { bodyL: 0.35, bodyW: 0.28, bodyH: 0.3, legLen: 0.18, legW: 0.05, color: '#f8f0e0', headColor: '#f8f0e0', legColor: '#e8a030', headSize: 0.18, hasHead: true, hasTail: false },
+  deer:     { bodyL: 1.2, bodyW: 0.5, bodyH: 0.65, legLen: 0.6, legW: 0.08, color: '#b28a5a', headColor: '#a07a48', headSize: 0.3, hasHead: true, hasTail: true, horns: 'antlers' },
+  rabbit:   { bodyL: 0.4, bodyW: 0.25, bodyH: 0.3, legLen: 0.1, legW: 0.06, color: '#d8d0c0', headSize: 0.2, hasHead: true, hasTail: true },
+  fox:      { bodyL: 0.7, bodyW: 0.28, bodyH: 0.32, legLen: 0.22, legW: 0.06, color: '#c66a30', headColor: '#c66a30', legColor: '#3a2010', headSize: 0.22, hasHead: true, hasTail: true },
+  monkey:   { bodyL: 0.55, bodyW: 0.3, bodyH: 0.4, legLen: 0.3, legW: 0.07, color: '#7a5a3a', headSize: 0.24, hasHead: true, hasTail: true },
+  tapir:    { bodyL: 1.1, bodyW: 0.5, bodyH: 0.55, legLen: 0.4, legW: 0.1, color: '#3a2a2a', headSize: 0.26, hasHead: true, hasTail: true },
+  camel:    { bodyL: 1.5, bodyW: 0.55, bodyH: 0.9, legLen: 0.85, legW: 0.11, color: '#d8b078', headSize: 0.32, hasHead: true, hasTail: true }
+}
+
+// ── Landmarks ────────────────────────────────────────────────────────────
+function LandmarkField({ landmarks }) {
+  const worldUp = new THREE.Vector3(0, 1, 0)
+  return (
+    <group>
+      {landmarks.map((lm, i) => {
+        const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, lm.normal)
+        const yawQ = new THREE.Quaternion().setFromAxisAngle(lm.normal, lm.rotY)
+        const q = yawQ.clone().multiply(upQ)
+        return (
+          <group key={i} position={lm.position} quaternion={q}>
+            {lm.type === 'eiffel'     && <LandmarkEiffel />}
+            {lm.type === 'lighthouse' && <LandmarkLighthouse />}
+            {lm.type === 'pyramid'    && <LandmarkPyramid />}
+            {lm.type === 'statue'     && <LandmarkStatue />}
+            {lm.type === 'colosseum'  && <LandmarkColosseum />}
+            {lm.type === 'pagoda'     && <LandmarkPagoda />}
+            {lm.type === 'windmill'   && <LandmarkWindmill />}
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function LandmarkEiffel() {
+  const color = '#5a4a3a'
+  return (
+    <group>
+      {[[ 1, 1], [-1, 1], [ 1,-1], [-1,-1]].map(([x, z], i) => (
+        <mesh key={i} position={[x * 1.5, 3.5, z * 1.5]} rotation={[0, 0, x > 0 ? -0.2 : 0.2]} castShadow>
+          <boxGeometry args={[0.4, 7, 0.4]} />
+          <meshStandardMaterial color={color} flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 7, 0]} castShadow><boxGeometry args={[3, 0.3, 3]} /><meshStandardMaterial color={color} flatShading /></mesh>
+      {[[ 1, 1], [-1, 1], [ 1,-1], [-1,-1]].map(([x, z], i) => (
+        <mesh key={i} position={[x * 0.9, 10, z * 0.9]} castShadow>
+          <boxGeometry args={[0.3, 6, 0.3]} />
+          <meshStandardMaterial color={color} flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 13, 0]} castShadow><boxGeometry args={[2, 0.3, 2]} /><meshStandardMaterial color={color} flatShading /></mesh>
+      <mesh position={[0, 17, 0]} castShadow><boxGeometry args={[1.2, 8, 1.2]} /><meshStandardMaterial color={color} flatShading /></mesh>
+      <mesh position={[0, 23, 0]} castShadow><coneGeometry args={[0.35, 3, 4]} /><meshStandardMaterial color={color} flatShading /></mesh>
+      <mesh position={[0, 25, 0]}>
+        <sphereGeometry args={[0.25, 6, 5]} />
+        <meshStandardMaterial color="#ffe088" emissive="#ffaa44" emissiveIntensity={1.6} />
+      </mesh>
+    </group>
+  )
+}
+
+function LandmarkLighthouse() {
+  return (
+    <group>
+      <mesh position={[0, 1.25, 0]} castShadow><cylinderGeometry args={[2.2, 2.6, 2.5, 10]} /><meshStandardMaterial color="#c8c0b0" flatShading /></mesh>
+      {[0, 1, 2, 3, 4].map(i => (
+        <mesh key={i} position={[0, 3 + i * 2, 0]} castShadow>
+          <cylinderGeometry args={[1.2 - i * 0.05, 1.3 - i * 0.05, 2, 10]} />
+          <meshStandardMaterial color={i % 2 === 0 ? '#e8e0d0' : '#c02828'} flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 13.5, 0]} castShadow><cylinderGeometry args={[1.4, 1.4, 0.3, 10]} /><meshStandardMaterial color="#3a3a3a" flatShading /></mesh>
+      <mesh position={[0, 14.4, 0]}>
+        <cylinderGeometry args={[0.8, 0.8, 1.4, 8]} />
+        <meshStandardMaterial color="#ffe088" emissive="#ffcc44" emissiveIntensity={1.4} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[0, 15.5, 0]} castShadow><coneGeometry args={[1.0, 1.2, 8]} /><meshStandardMaterial color="#8a2a2a" flatShading /></mesh>
+    </group>
+  )
+}
+
+function LandmarkPyramid() {
+  return (
+    <group>
+      <mesh position={[0, 6, 0]} castShadow receiveShadow><coneGeometry args={[10, 12, 4]} /><meshStandardMaterial color="#d6b472" flatShading /></mesh>
+      <mesh position={[0, 1.5, 7.3]}><boxGeometry args={[1.2, 2.5, 0.3]} /><meshStandardMaterial color="#1a1208" flatShading /></mesh>
+    </group>
+  )
+}
+
+function LandmarkStatue() {
+  return (
+    <group>
+      <mesh position={[0, 1.25, 0]} castShadow><boxGeometry args={[3, 2.5, 3]} /><meshStandardMaterial color="#888078" flatShading /></mesh>
+      <mesh position={[-0.4, 4.5, 0]} castShadow><boxGeometry args={[0.5, 4, 0.5]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      <mesh position={[0.4, 4.5, 0]} castShadow><boxGeometry args={[0.5, 4, 0.5]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      <mesh position={[0, 8, 0]} castShadow><boxGeometry args={[1.6, 3, 0.9]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      <mesh position={[0, 10.2, 0]} castShadow><boxGeometry args={[0.8, 1, 0.8]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      <mesh position={[0.6, 9.5, 0]} rotation={[0, 0, -0.9]} castShadow><boxGeometry args={[0.35, 2.8, 0.35]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      <mesh position={[2.2, 11.0, 0]}><coneGeometry args={[0.25, 0.8, 5]} /><meshStandardMaterial color="#ffd060" emissive="#ffaa20" emissiveIntensity={1.4} /></mesh>
+      {[-0.3, 0, 0.3].map((x, i) => (
+        <mesh key={i} position={[x, 11, 0]}><coneGeometry args={[0.1, 0.5, 4]} /><meshStandardMaterial color="#68a898" flatShading /></mesh>
+      ))}
+    </group>
+  )
+}
+
+function LandmarkColosseum() {
+  const archCount = 16
+  const radius = 6
+  return (
+    <group>
+      {Array.from({ length: archCount }).map((_, i) => {
+        const a = (i / archCount) * Math.PI * 2
+        const x = Math.cos(a) * radius
+        const z = Math.sin(a) * radius
+        return (
+          <group key={i} position={[x, 0, z]} rotation={[0, -a, 0]}>
+            <mesh position={[0, 2, 0]} castShadow><boxGeometry args={[1.4, 4, 1.2]} /><meshStandardMaterial color="#d0c0a8" flatShading /></mesh>
+            <mesh position={[0, 5, 0]} castShadow><boxGeometry args={[1.4, 2, 1.2]} /><meshStandardMaterial color="#c8b898" flatShading /></mesh>
+          </group>
+        )
+      })}
+      <mesh position={[0, 0.5, 0]}><cylinderGeometry args={[4.5, 4.5, 1, 16]} /><meshStandardMaterial color="#b8a888" flatShading /></mesh>
+    </group>
+  )
+}
+
+function LandmarkPagoda() {
+  return (
+    <group>
+      {[0, 1, 2, 3].map(i => {
+        const size = 3.5 - i * 0.5
+        return (
+          <group key={i} position={[0, 1 + i * 2.2, 0]}>
+            <mesh castShadow><boxGeometry args={[size, 1.6, size]} /><meshStandardMaterial color="#d02020" flatShading /></mesh>
+            <mesh position={[0, 1.2, 0]} castShadow><coneGeometry args={[size * 0.85, 0.7, 4]} /><meshStandardMaterial color="#2a1a0a" flatShading /></mesh>
+          </group>
+        )
+      })}
+      <mesh position={[0, 10.5, 0]}><coneGeometry args={[0.25, 1.2, 4]} /><meshStandardMaterial color="#e8a030" /></mesh>
+    </group>
+  )
+}
+
+function LandmarkWindmill() {
+  const bladesRef = useRef()
+  useFrame((rs) => {
+    if (bladesRef.current) bladesRef.current.rotation.z = rs.clock.elapsedTime * 0.6
+  })
+  return (
+    <group>
+      <mesh position={[0, 3, 0]} castShadow><cylinderGeometry args={[1.2, 1.8, 6, 8]} /><meshStandardMaterial color="#e8d8b0" flatShading /></mesh>
+      <mesh position={[0, 6.5, 0]} castShadow><coneGeometry args={[1.5, 1.5, 8]} /><meshStandardMaterial color="#5a3515" flatShading /></mesh>
+      <group ref={bladesRef} position={[0, 5.2, 1.5]}>
+        {[0, 1, 2, 3].map(i => (
+          <mesh key={i} rotation={[0, 0, (i / 4) * Math.PI * 2]} castShadow>
+            <boxGeometry args={[0.2, 4.5, 0.1]} />
+            <meshStandardMaterial color="#f0e8d8" flatShading />
+          </mesh>
+        ))}
+        <mesh><sphereGeometry args={[0.25, 6, 5]} /><meshStandardMaterial color="#3a2a1a" flatShading /></mesh>
+      </group>
+      <mesh position={[0, 1.2, 1.75]}><boxGeometry args={[0.9, 2, 0.1]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+    </group>
+  )
+}
+
+// ── Wilderness Outposts ─────────────────────────────────────────────────
+// Small human/natural markers scattered FAR from villages so empty stretches
+// of the planet feel lived-in. Each type is a compact low-poly prop.
+function OutpostField({ outposts }) {
+  const worldUp = new THREE.Vector3(0, 1, 0)
+  return (
+    <group>
+      {outposts.map((o, i) => {
+        const upQ = new THREE.Quaternion().setFromUnitVectors(worldUp, o.normal)
+        const yawQ = new THREE.Quaternion().setFromAxisAngle(o.normal, o.rotY)
+        const q = yawQ.clone().multiply(upQ)
+        return (
+          <group key={i} position={o.position} quaternion={q}>
+            {o.type === 'shrine'         && <OutpostShrine />}
+            {o.type === 'ruin'           && <OutpostRuin />}
+            {o.type === 'campfire'       && <OutpostCampfire />}
+            {o.type === 'standingStones' && <OutpostStandingStones />}
+            {o.type === 'loneCabin'      && <OutpostLoneCabin />}
+            {o.type === 'oldWell'        && <OutpostOldWell />}
+            {o.type === 'signpost'       && <OutpostSignpost />}
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function OutpostShrine() {
+  return (
+    <group>
+      <mesh position={[0, 0.2, 0]} castShadow><boxGeometry args={[2.4, 0.4, 2.4]} /><meshStandardMaterial color="#8a7a68" flatShading /></mesh>
+      {[[ 0.9, 0.9], [-0.9, 0.9], [ 0.9,-0.9], [-0.9,-0.9]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 1.3, z]} castShadow>
+          <cylinderGeometry args={[0.14, 0.14, 2, 6]} />
+          <meshStandardMaterial color="#6a2828" flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 2.45, 0]} castShadow><boxGeometry args={[2.4, 0.22, 2.4]} /><meshStandardMaterial color="#c02828" flatShading /></mesh>
+      <mesh position={[0, 2.95, 0]} castShadow><coneGeometry args={[1.6, 0.9, 4]} /><meshStandardMaterial color="#8a2020" flatShading /></mesh>
+      <mesh position={[0, 1.4, 0]}><sphereGeometry args={[0.25, 6, 5]} /><meshStandardMaterial color="#ffe088" emissive="#ffaa44" emissiveIntensity={0.9} /></mesh>
+    </group>
+  )
+}
+
+function OutpostRuin() {
+  return (
+    <group>
+      {[[-1.2, 0, 0.8, 1.6], [1.2, 0, -0.4, 1.1], [-0.4, 0, -1.2, 0.7], [0.6, 0, 1.3, 0.9]].map(([x, _, z, h], i) => (
+        <mesh key={i} position={[x, h / 2, z]} rotation={[0, Math.random() * 0.3 - 0.15, (i % 2) * 0.1]} castShadow>
+          <boxGeometry args={[0.6, h, 0.5]} />
+          <meshStandardMaterial color="#b0a898" flatShading />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.15, 0]} castShadow><boxGeometry args={[3.2, 0.3, 3.2]} /><meshStandardMaterial color="#8a8272" flatShading /></mesh>
+      <mesh position={[1.4, 0.5, 1.3]} rotation={[0.3, 0.4, 0.1]} castShadow>
+        <boxGeometry args={[0.5, 0.9, 0.5]} />
+        <meshStandardMaterial color="#a09888" flatShading />
+      </mesh>
+    </group>
+  )
+}
+
+function OutpostCampfire() {
+  return (
+    <group>
+      {[0, 1, 2, 3, 4, 5].map(i => {
+        const a = (i / 6) * Math.PI * 2
+        return (
+          <mesh key={i} position={[Math.cos(a) * 0.7, 0.1, Math.sin(a) * 0.7]} castShadow>
+            <sphereGeometry args={[0.18, 5, 4]} />
+            <meshStandardMaterial color="#6a6a6a" flatShading />
+          </mesh>
+        )
+      })}
+      <mesh position={[-0.4, 0.35, 0]} rotation={[0, 0, 0.6]} castShadow><cylinderGeometry args={[0.08, 0.08, 1.2, 5]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0.4, 0.35, 0]} rotation={[0, 0, -0.6]} castShadow><cylinderGeometry args={[0.08, 0.08, 1.2, 5]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0, 0.3, -0.4]} rotation={[0.6, 0, 0]} castShadow><cylinderGeometry args={[0.08, 0.08, 1.2, 5]} /><meshStandardMaterial color="#3a2510" flatShading /></mesh>
+      <mesh position={[0, 0.35, 0]}>
+        <coneGeometry args={[0.35, 0.7, 6]} />
+        <meshStandardMaterial color="#ff7033" emissive="#ff5500" emissiveIntensity={1.8} transparent opacity={0.85} />
+      </mesh>
+    </group>
+  )
+}
+
+function OutpostStandingStones() {
+  const positions = [[0, 0], [1.8, 0.3], [-1.6, 0.6], [0.8, 1.8], [-0.9, -1.7], [1.5, -1.4], [-1.7, 1.5]]
+  return (
+    <group>
+      {positions.map(([x, z], i) => {
+        const h = 2.5 + (i % 3) * 0.8
+        return (
+          <mesh key={i} position={[x, h / 2, z]} rotation={[0, i * 0.7, (i % 2) * 0.08]} castShadow>
+            <boxGeometry args={[0.7, h, 0.5]} />
+            <meshStandardMaterial color="#7a7268" flatShading />
+          </mesh>
+        )
+      })}
+      <mesh position={[0, 0.05, 0]}><cylinderGeometry args={[2.4, 2.4, 0.1, 16]} /><meshStandardMaterial color="#6a6258" flatShading /></mesh>
+    </group>
+  )
+}
+
+function OutpostLoneCabin() {
+  return (
+    <group>
+      <mesh position={[0, 1.1, 0]} castShadow><boxGeometry args={[3.2, 2.2, 2.6]} /><meshStandardMaterial color="#8a6240" flatShading /></mesh>
+      <mesh position={[0, 2.7, 0]} castShadow><coneGeometry args={[2.4, 1.4, 4]} rotation={[0, Math.PI / 4, 0]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0, 1.0, 1.31]}><boxGeometry args={[0.7, 1.4, 0.05]} /><meshStandardMaterial color="#3a2510" flatShading /></mesh>
+      <mesh position={[-1.0, 1.4, 1.31]}><boxGeometry args={[0.5, 0.5, 0.05]} /><meshStandardMaterial color="#ffdd88" emissive="#ffaa33" emissiveIntensity={0.6} /></mesh>
+      <mesh position={[1.0, 1.4, 1.31]}><boxGeometry args={[0.5, 0.5, 0.05]} /><meshStandardMaterial color="#ffdd88" emissive="#ffaa33" emissiveIntensity={0.6} /></mesh>
+      <mesh position={[0.8, 2.8, 0]} castShadow><boxGeometry args={[0.35, 1.2, 0.35]} /><meshStandardMaterial color="#3a3a3a" flatShading /></mesh>
+    </group>
+  )
+}
+
+function OutpostOldWell() {
+  return (
+    <group>
+      <mesh position={[0, 0.6, 0]} castShadow><cylinderGeometry args={[0.9, 1.0, 1.2, 10]} /><meshStandardMaterial color="#8a8272" flatShading /></mesh>
+      <mesh position={[0, 1.25, 0]}><cylinderGeometry args={[0.75, 0.75, 0.1, 10]} /><meshStandardMaterial color="#1a2a3a" /></mesh>
+      <mesh position={[-1.0, 1.8, 0]} castShadow><cylinderGeometry args={[0.1, 0.1, 2.4, 5]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[1.0, 1.8, 0]} castShadow><cylinderGeometry args={[0.1, 0.1, 2.4, 5]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0, 3.0, 0]} castShadow rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.08, 0.08, 2.0, 5]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0, 3.4, 0]} castShadow><coneGeometry args={[1.4, 0.8, 4]} rotation={[0, Math.PI / 4, 0]} /><meshStandardMaterial color="#6a4028" flatShading /></mesh>
+      <mesh position={[0.2, 2.2, 0]} castShadow><boxGeometry args={[0.4, 0.4, 0.4]} /><meshStandardMaterial color="#5a3a20" flatShading /></mesh>
+    </group>
+  )
+}
+
+function OutpostSignpost() {
+  return (
+    <group>
+      <mesh position={[0, 1.3, 0]} castShadow><cylinderGeometry args={[0.08, 0.1, 2.6, 6]} /><meshStandardMaterial color="#4a2f15" flatShading /></mesh>
+      <mesh position={[0.6, 2.0, 0]} rotation={[0, 0, 0]} castShadow>
+        <boxGeometry args={[1.1, 0.35, 0.08]} />
+        <meshStandardMaterial color="#8a6240" flatShading />
+      </mesh>
+      <mesh position={[-0.6, 1.6, 0]} rotation={[0, Math.PI, 0]} castShadow>
+        <boxGeometry args={[1.1, 0.3, 0.08]} />
+        <meshStandardMaterial color="#7a5430" flatShading />
+      </mesh>
+      <mesh position={[0, 0.05, 0]}><cylinderGeometry args={[0.45, 0.45, 0.08, 8]} /><meshStandardMaterial color="#6a6258" flatShading /></mesh>
     </group>
   )
 }

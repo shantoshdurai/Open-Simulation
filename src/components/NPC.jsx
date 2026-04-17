@@ -3,8 +3,15 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import CharacterMesh from './CharacterMesh.jsx'
 import SpeechBubble from './SpeechBubble.jsx'
-import { pickConversation } from '../utils/dialoguePool.js'
 import { JOB_WORK_TYPES } from '../utils/personalities.js'
+import {
+  createBrain,
+  tickNeeds,
+  tickFacts,
+  composeConversation,
+  applyConversationEffects,
+  addFact
+} from '../utils/npcBrain.js'
 
 const STATES = {
   IDLE:             'idle',
@@ -20,11 +27,21 @@ const STATES = {
 // How long each schedule-phase lasts before re-evaluating (seconds of sim time)
 const SCHEDULE_CHECK_INTERVAL = 30 // Don't check schedule more than every 30s
 
-export default function NPC({ planet, npc, registry, timeRef, village, season }) {
+export default function NPC({ planet, npc, registry, timeRef, village, season, brainBank }) {
   const [speechBubble, setSpeechBubble] = useState(null)
 
   const groupRef = useRef()
   const meshRef  = useRef()
+
+  // One brain per NPC, keyed by id in the shared brainBank Map
+  const brain = useMemo(() => {
+    if (!brainBank) return createBrain(Math.random)
+    if (!brainBank.has(npc.id)) {
+      const rng = mulberry32(npc.seed * 7919 + 3)
+      brainBank.set(npc.id, createBrain(rng))
+    }
+    return brainBank.get(npc.id)
+  }, [brainBank, npc.id, npc.seed])
 
   const state = useRef({
     position: new THREE.Vector3(),
@@ -33,25 +50,24 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
     speed: 0,
     targetSpeed: 0,
     behavior: STATES.WANDER,
-    behaviorTimer: Math.random() * 5,       // Stagger so not all NPCs sync
-    scheduleTimer: Math.random() * 30,      // Stagger schedule checks
+    behaviorTimer: Math.random() * 5,
+    scheduleTimer: Math.random() * 30,
     walkPhase: Math.random() * Math.PI * 2,
     chatPartner: null,
     lookYaw: 0,
     workType: 'chop',
     homePosition: null,
     workSpot: null,
-    // Conversation system
     conversation: null,
     speechText: null,
     speechVisible: false,
-    // Water bounce
     waterBounceCount: 0,
     waterBounceTimer: 0,
-    // LOD
     _skipFrame: false,
-    // Rest — NPCs don't lay down, they just stand still at home
-    isResting: false
+    isResting: false,
+    // Brain ticks (cheaper than running every frame)
+    brainTickTimer: Math.random() * 2,
+    chatCooldown: 0
   }).current
 
   // Spawn near assigned village
@@ -64,19 +80,30 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
       const right = new THREE.Vector3().crossVectors(ref, up).normalize()
       const fwd   = new THREE.Vector3().crossVectors(up, right).normalize()
 
-      const angle = rng() * Math.PI * 2
-      const dist  = 3 + rng() * 15
-      const offset = right.clone().multiplyScalar(Math.cos(angle) * dist)
-        .addScaledVector(fwd, Math.sin(angle) * dist)
-      let spawnDir = up.clone().multiplyScalar(planet.radius).add(offset).normalize()
-      if (!planet.isLand(spawnDir.x, spawnDir.y, spawnDir.z)) spawnDir = village.center.clone().normalize()
+      // Spawn spread widely across the village so NPCs don't stack at the well.
+      // Tries a few spots until one lands on land and isn't inside a house.
+      let spawnDir = village.center.clone().normalize()
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const angle = rng() * Math.PI * 2
+        const dist  = 8 + rng() * 22
+        const offset = right.clone().multiplyScalar(Math.cos(angle) * dist)
+          .addScaledVector(fwd, Math.sin(angle) * dist)
+        const candidate = up.clone().multiplyScalar(planet.radius).add(offset).normalize()
+        if (!planet.isLand(candidate.x, candidate.y, candidate.z)) continue
+        // Avoid spawning on a house footprint (~3 unit radius)
+        const pt = planet.groundSampler.getGroundPoint(candidate)
+        const clash = village.houses?.some(h => pt.distanceTo(h.position) < 3.5)
+        if (clash) continue
+        spawnDir = candidate
+        break
+      }
 
       const groundPt = planet.groundSampler.getGroundPoint(spawnDir)
       state.position.copy(groundPt)
       state.homePosition = planet.groundSampler.getGroundPoint(village.center.clone().normalize())
 
       const workAngle = rng() * Math.PI * 2
-      const workDist  = 5 + rng() * 12
+      const workDist  = 8 + rng() * 18
       const workOffset = right.clone().multiplyScalar(Math.cos(workAngle) * workDist)
         .addScaledVector(fwd, Math.sin(workAngle) * workDist)
       let workDir = up.clone().multiplyScalar(planet.radius).add(workOffset).normalize()
@@ -114,11 +141,13 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
     if (!registry) return
     registry.add(npc.id, {
       npc,
+      brain,
       getPosition:    () => state.position.clone(),
       getBehavior:    () => state.behavior,
       setBehavior:    (b) => { state.behavior = b; state.behaviorTimer = 0 },
       getConversation:() => state.conversation,
-      setConversation:(conv) => { state.conversation = conv }
+      setConversation:(conv) => { state.conversation = conv },
+      receiveFact:    (fact) => addFact(brain, fact)
     })
     return () => registry.remove(npc.id)
   }, [npc, registry])
@@ -170,14 +199,10 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
     if (distToCam > 160) {
       if (groupRef.current) {
         groupRef.current.position.copy(state.position)
-        // Still need to orient correctly
+        // Still orient upright cheaply — stand with the planet normal as up
         scratch.up.copy(state.position).normalize()
-        const Y = scratch.up
-        const Z = state.direction.clone().addScaledVector(Y, -state.direction.dot(Y)).normalize()
-        if (Z.lengthSq() > 0.01) {
-          const X = Y.clone().cross(Z).normalize()
-          groupRef.current.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, Y, Z))
-        }
+        const qUp = new THREE.Quaternion().setFromUnitVectors(scratch.worldUp, scratch.up)
+        groupRef.current.quaternion.copy(qUp)
       }
       return
     }
@@ -192,9 +217,24 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
     // Timers
     state.behaviorTimer  -= dt
     state.scheduleTimer  -= dt
+    state.brainTickTimer -= dt
+    if (state.chatCooldown > 0) state.chatCooldown -= dt
     if (state.waterBounceTimer > 0) {
       state.waterBounceTimer -= dt
       if (state.waterBounceTimer <= 0) state.waterBounceCount = 0
+    }
+
+    // Brain tick (every 2s — needs decay, facts fade, conversation-memory ages)
+    if (state.brainTickTimer <= 0) {
+      state.brainTickTimer = 2
+      tickNeeds(brain.needs, 2)
+      tickFacts(brain, 2)
+      // Age lastSpokeWith map
+      for (const [id, t] of brain.lastSpokeWith) {
+        const newT = t + 2
+        if (newT > 60) brain.lastSpokeWith.delete(id)
+        else brain.lastSpokeWith.set(id, newT)
+      }
     }
 
     // Schedule transitions — staggered, don't interrupt chatting/player-talk
@@ -320,12 +360,14 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
           }
         }
 
-        // Find chat partner — only if not already in conversation
-        if (!state.chatPartner && state.behaviorTimer <= 0) {
+        // Find chat partner — only if not already in conversation and not
+        // on cooldown from recently finishing one.
+        if (!state.chatPartner && state.behaviorTimer <= 0 && state.chatCooldown <= 0) {
           const nearest = registry.findNearest(state.position, 18, npc.id)
           if (nearest && nearest.distance > 2.5) {
             const pb = nearest.getBehavior()
-            if (pb === STATES.SOCIALIZE || pb === STATES.IDLE || pb === STATES.WANDER) {
+            const recentlySpoke = brain.lastSpokeWith.has(nearest.npc.id)
+            if (!recentlySpoke && (pb === STATES.SOCIALIZE || pb === STATES.IDLE || pb === STATES.WANDER)) {
               state.chatPartner   = nearest.npc.id
               state.behaviorTimer = 10
             }
@@ -345,7 +387,14 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
               state.behavior   = STATES.CHATTING
               state.isSitting  = Math.random() > 0.5
 
-              const conv = pickConversation(npc, partner.npc, timeRef ? timeRef.current : 0.5, season || 'Summer')
+              // Compose a conversation from brain state (facts + needs + context).
+              // This also propagates the fact from A -> B (chain reaction).
+              const conv = composeConversation(
+                npc, brain,
+                partner.npc, partner.brain,
+                timeRef ? timeRef.current : 0.5
+              )
+              state._convTopic = conv.topic
               const totalTime = conv.lines.length * 5 + 2
               state.behaviorTimer  = totalTime
               state.conversation = {
@@ -354,7 +403,8 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
                 lineTimer:      5,
                 partnerId:      state.chatPartner,
                 iAmInitiator:   true,
-                partnerNpcData: partner.npc
+                partnerNpcData: partner.npc,
+                topic:          conv.topic
               }
               partner.setConversation({
                 lines:          conv.lines,
@@ -362,7 +412,8 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
                 lineTimer:      5,
                 partnerId:      npc.id,
                 iAmInitiator:   false,
-                partnerNpcData: npc
+                partnerNpcData: npc,
+                topic:          conv.topic
               })
               if (partner.getBehavior() !== STATES.CHATTING) {
                 partner.setBehavior(STATES.CHATTING)
@@ -469,6 +520,16 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
     }
 
     function endConversation() {
+      // Apply social/purpose bumps from the topic we just discussed
+      if (state.chatPartner) {
+        const partner = registry.get(state.chatPartner)
+        if (partner && partner.brain) {
+          const topic = state.conversation?.topic || 'midday'
+          applyConversationEffects(brain, partner.brain, topic)
+          // Remember we spoke so we don't rechat the same person in 60s
+          brain.lastSpokeWith.set(state.chatPartner, 0)
+        }
+      }
       state.conversation  = null
       state.speechText    = null
       state.speechVisible = false
@@ -477,6 +538,7 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
       state.behavior      = STATES.WANDER
       state.behaviorTimer = 3 + Math.random() * 4
       state.isSitting     = false
+      state.chatCooldown  = 8   // don't immediately start another chat
     }
 
     state.targetSpeed = speed
@@ -544,26 +606,36 @@ export default function NPC({ planet, npc, registry, timeRef, village, season })
 
     if (meshRef.current) meshRef.current.setAnimation(state.walkPhase, state.speed, animAction)
 
-    // Orientation — always upright, NPCs never lie down
+    // Orientation — always upright. Build basis using first align-up then
+    // rotate around up to face direction. Guaranteed orthonormal.
     if (groupRef.current) {
       groupRef.current.position.copy(state.position)
 
       const Y = scratch.up.clone()
-      const Z = state.direction.clone().addScaledVector(Y, -state.direction.dot(Y))
+      // Project direction onto tangent plane
+      const fwdTangent = state.direction.clone().addScaledVector(Y, -state.direction.dot(Y))
 
-      if (Z.lengthSq() < 0.001) {
-        // Fallback direction
-        const ref   = Math.abs(Y.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+      // If direction degenerates, pick a stable fallback on the tangent plane
+      if (fwdTangent.lengthSq() < 1e-4) {
+        const ref = Math.abs(Y.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
         const right = new THREE.Vector3().crossVectors(ref, Y).normalize()
-        Z.copy(new THREE.Vector3().crossVectors(Y, right).normalize())
-      } else {
-        Z.normalize()
+        fwdTangent.copy(new THREE.Vector3().crossVectors(Y, right))
       }
+      fwdTangent.normalize()
 
-      const X = new THREE.Vector3().crossVectors(Y, Z).normalize()
-      Z.copy(new THREE.Vector3().crossVectors(X, Y).normalize())
-      const mat = new THREE.Matrix4().makeBasis(X, Y, Z)
-      groupRef.current.quaternion.setFromRotationMatrix(mat)
+      // Align world-up (0,1,0) to Y
+      const qUp = new THREE.Quaternion().setFromUnitVectors(scratch.worldUp, Y)
+      // After qUp, the model's +Z points in qUp.rotate(0,0,1). Compute the yaw
+      // around Y needed to rotate that into fwdTangent.
+      const modelFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(qUp)
+      // angle from modelFwd to fwdTangent around Y
+      let cos = THREE.MathUtils.clamp(modelFwd.dot(fwdTangent), -1, 1)
+      const cross = new THREE.Vector3().crossVectors(modelFwd, fwdTangent)
+      const sign = cross.dot(Y) >= 0 ? 1 : -1
+      const yaw = Math.acos(cos) * sign
+      const qYaw = new THREE.Quaternion().setFromAxisAngle(Y, yaw)
+
+      groupRef.current.quaternion.multiplyQuaternions(qYaw, qUp)
     }
   })
 

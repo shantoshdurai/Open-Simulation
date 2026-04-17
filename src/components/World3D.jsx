@@ -8,6 +8,7 @@ import Sky from './Sky.jsx'
 import ChatPanel from './ChatPanel.jsx'
 import { generateNPC } from '../utils/personalities.js'
 import { createNPCRegistry } from '../utils/registry.js'
+import { createEventScheduler, tickEventScheduler } from '../utils/worldEvents.js'
 
 const SEASON_NAMES = ['Spring', 'Summer', 'Autumn', 'Winter']
 
@@ -20,6 +21,9 @@ export default function World3D({ config }) {
   const [ready, setReady] = useState(false)
 
   const registry = useMemo(() => createNPCRegistry(), [])
+  // Shared brain storage: npc.id -> brain. Lives outside components so brains
+  // survive remounts and all NPCs can exchange facts through the registry.
+  const brainBank = useMemo(() => new Map(), [])
   const timeRef = useRef(0.4)
   timeRef.current = timeOfDay
 
@@ -72,13 +76,22 @@ export default function World3D({ config }) {
     timeOfDay: timeLabel
   }
 
-  // Distribute NPCs across villages
+  // Evenly spread NPCs across villages, with a modest bias toward the spawn
+  // village (index 0) so the starting area feels populated without a pileup.
   const assignNPCsToVillages = (villages) => {
     if (!villages || villages.length === 0) return npcs.map(n => ({ npc: n, village: null }))
-    return npcs.map((n, i) => ({
-      npc: n,
-      village: villages[i % villages.length]
-    }))
+    const weights = villages.map((_, i) => (i === 0 ? 2 : 1))
+    const totalW = weights.reduce((a, b) => a + b, 0)
+    return npcs.map((n, i) => {
+      // Weighted round-robin
+      const r = (i / npcs.length) * totalW
+      let acc = 0
+      for (let v = 0; v < villages.length; v++) {
+        acc += weights[v]
+        if (r < acc) return { npc: n, village: villages[v] }
+      }
+      return { npc: n, village: villages[villages.length - 1] }
+    })
   }
 
   return (
@@ -106,6 +119,7 @@ export default function World3D({ config }) {
                   onInteract={handleInteract}
                   isPaused={!!activeNPC}
                   appearance={playerAppearance}
+                  spawnVillage={villages?.[0]}
                 />
                 {assignments.map(({ npc: n, village }) => (
                   <NPC
@@ -116,8 +130,10 @@ export default function World3D({ config }) {
                     timeRef={timeRef}
                     village={village}
                     season={SEASON_NAMES[Math.floor(season) % 4]}
+                    brainBank={brainBank}
                   />
                 ))}
+                <EventTicker registry={registry} npcs={npcs} />
                 <Ambient planet={planet} />
                 <Fish planet={planet} />
                 <SnowParticles planet={planet} />
@@ -191,6 +207,32 @@ export default function World3D({ config }) {
       )}
     </>
   )
+}
+
+// ── Event Ticker — periodically spawns world events (wolves, storms, babies,
+// harvests, festivals, traders, strangers) and plants the fact into a random
+// NPC. From there it propagates via conversations, so village news feels
+// connected without any API calls.
+function EventTicker({ registry, npcs }) {
+  const sched = useRef(createEventScheduler())
+  useFrame((_, dt) => {
+    const clamped = Math.min(dt, 0.1)
+    // Pull live brains/npc data out of the registry so we only seed into NPCs
+    // that are actually mounted and ready.
+    const entries = []
+    for (const n of npcs) {
+      const e = registry.get?.(n.id)
+      if (e && e.brain) entries.push(e)
+    }
+    if (entries.length === 0) return
+    const brains = entries.map(e => e.brain)
+    const ev = tickEventScheduler(sched.current, clamped, entries, brains, registry, Math.random)
+    if (ev) {
+      const target = entries[ev.witnessIdx % entries.length]
+      if (target && target.receiveFact) target.receiveFact(ev.fact)
+    }
+  })
+  return null
 }
 
 // ── Butterflies ──

@@ -18,13 +18,17 @@ export function hasApiKey() {
   return !!getApiKey()
 }
 
+// Only send the most recent turns to Gemini. Older history doesn't change the
+// reply much and uses input tokens every call. 6 turns = 3 exchanges back.
+const HISTORY_WINDOW = 6
+
 export async function chatWithGemini({ systemPrompt, history, userMessage }) {
   const key = getApiKey()
   if (!key) throw new Error('No Gemini API key set')
 
-  // Gemini contents format: array of {role, parts}
+  const trimmed = history.slice(-HISTORY_WINDOW)
   const contents = []
-  history.forEach(h => {
+  trimmed.forEach(h => {
     contents.push({
       role: h.role === 'npc' ? 'model' : 'user',
       parts: [{ text: h.text }]
@@ -39,7 +43,7 @@ export async function chatWithGemini({ systemPrompt, history, userMessage }) {
     contents,
     generationConfig: {
       temperature: 0.85,
-      maxOutputTokens: 80,
+      maxOutputTokens: 60,
       topP: 0.92
     }
   }
